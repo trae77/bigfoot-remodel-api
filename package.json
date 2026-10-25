@@ -1,0 +1,15 @@
+{
+  "name": "bigfoot-remodel-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Free Render generate-only API for Big Foot remodel preview (fal Kontext)",
+  "main": "remodelApi.cjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node remodelApi.cjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  }
+}
