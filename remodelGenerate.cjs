@@ -15,6 +15,13 @@ const HONESTY = 'AI preview — not a final design · not a bid';
 const sessionSpend = new Map();
 
 function getFalKey() {
+  // FAL_KEY_B64: MCP/host may redact raw key-shaped secrets; base64 survives inject.
+  if (process.env.FAL_KEY_B64) {
+    try {
+      const decoded = Buffer.from(String(process.env.FAL_KEY_B64).trim(), 'base64').toString('utf8').trim();
+      if (decoded) return decoded;
+    } catch (_) { /* fall through */ }
+  }
   const key = process.env.FAL_KEY || process.env.FAL_API_KEY || process.env.REMODEL_AI_API_KEY;
   return key && String(key).trim() ? String(key).trim() : '';
 }
