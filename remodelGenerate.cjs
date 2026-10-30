@@ -153,7 +153,7 @@ function createRemodelGenerateHandler(deps) {
       const client = await deps.getClientFromToken(req);
       const auth = (req.headers.authorization || '').toString();
       const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-      const isOwner = Boolean(token && deps.ownerTokens.has(token));
+      const isOwner = Boolean(token && deps.ownerTokens && deps.ownerTokens.has(token));
       if (!client && !isOwner) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
