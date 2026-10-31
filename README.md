@@ -8,4 +8,4 @@ Generate-only Free Render microservice for Big Foot Construction remodel preview
 
 Requires `REMODEL_TOKEN_SECRET` (fails closed). See DEPLOY-NOTE-P1-3.md. Tests: `npm test`.
 
-Set `FAL_KEY` on the host only. Never put the key in the SPA or Cloudflare Worker.
+Set `FAL_KEY` on the host only (the only key var read; see DEPLOY-NOTE-P1-3.md). Never put the key in the SPA or Cloudflare Worker.
