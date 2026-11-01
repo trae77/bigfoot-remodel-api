@@ -130,9 +130,70 @@ test('a failing middle pass returns 502 and stops (no further calls); missing ke
   try { const r = await gen(s2.base); assert.equal(r.status, 503); assert.equal(runs2.length, 0); } finally { await s2.close(); }
 });
 
-test('fill engine needs REMODEL_FILL_USD (no invented price): unset falls back to kontext', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill' });
-  try { assert.equal((await gen(s.base, { counters: 'granite' })).status, 200); assert.equal(runs[0].url, 'https://fal.run/fal-ai/flux-pro/kontext'); } finally { await s.close(); }
+test('fill fails closed (503, no call) when REMODEL_FILL_USD is unset, junk, or above 0.16', async () => {
+  for (const v of [undefined, 'abc', '0', '-1', '0.17', '0.5', '5']) {
+    const env = { REMODEL_REGION_ENGINE: 'fill' }; if (v !== undefined) env.REMODEL_FILL_USD = v;
+    const runs = []; const s = await boot(stubFal(runs), env);
+    try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 503, String(v)); assert.equal(runs.length, 0, String(v)); } finally { await s.close(); }
+  }
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.16' });
+  try { assert.equal((await gen(s.base, { counters: 'granite' })).status, 200); assert.equal(runs[0].url, 'https://fal.run/fal-ai/flux-pro/v1/fill'); } finally { await s.close(); }
+});
+
+test('regions OFF: engine and provider forced to kontext even with REMODEL_REGION_ENGINE=fill and a price', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGIONS: '0', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05' });
+  try {
+    const r = await gen(s.base);
+    assert.equal(r.status, 200);
+    assert.ok(runs.length >= 1 && runs.every((x) => x.url.startsWith('https://fal.run/fal-ai/flux-pro/kontext') && !('mask_url' in x.body)));
+    assert.match(r.json.provider, /kontext/);
+  } finally { await s.close(); }
+});
+
+test('fill engine refuses to run without a PNG mask (NO_MASK, no fetch)', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05' });
+  await s.close();
+  const e = require('../engines.cjs').ENGINES.fill;
+  for (const m of [undefined, '', 'https://x/mask.png', 'data:image/jpeg;base64,AA']) {
+    await assert.rejects(e.run({ prompt: 'p', mask_url: m }, 'data:image/png;base64,AA', { fetchImpl: stubFal(runs) }), (x) => x.code === 'NO_MASK');
+  }
+  assert.equal(runs.length, 0);
+});
+
+test('monthly dollar cap (D1, cents) counts every call: 0.12 cap allows one 3-call kontext render, refuses the next with no call', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_MONTHLY_USD_CAP: '0.12' });
+  try {
+    assert.equal((await gen(s.base)).status, 200); assert.equal(runs.length, 3);
+    const r2 = await gen(s.base, { floor: 'oak' });
+    assert.equal(r2.status, 429); assert.match(r2.json.error, /Monthly/); assert.equal(runs.length, 3);
+  } finally { await s.close(); delete process.env.REMODEL_MONTHLY_USD_CAP; }
+});
+
+test('monthly dollar cap default is 10 USD; invalid or above 19 falls back to 10', () => {
+  const { monthlyUsdCapCents } = require('../capStore.cjs');
+  assert.equal(monthlyUsdCapCents({}), 1000);
+  for (const v of ['abc', '0', '-5', '19.01', '500']) assert.equal(monthlyUsdCapCents({ REMODEL_MONTHLY_USD_CAP: v }), 1000, v);
+  assert.equal(monthlyUsdCapCents({ REMODEL_MONTHLY_USD_CAP: '5' }), 500);
+});
+
+test('monthly dollar cap counts the fill price per call: 0.32 cap allows two 0.16 fill calls, third refused with no call', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.16', REMODEL_MONTHLY_USD_CAP: '0.32' });
+  try {
+    assert.equal((await gen(s.base, { counters: 'granite' })).status, 200);
+    assert.equal((await gen(s.base, { counters: 'granite' })).status, 200);
+    const r = await gen(s.base, { counters: 'granite' });
+    assert.equal(r.status, 429); assert.equal(runs.length, 2);
+  } finally { await s.close(); delete process.env.REMODEL_MONTHLY_USD_CAP; }
+});
+
+test('API security headers: nosniff, no-referrer, CSP default-src none', async () => {
+  const s = await boot(stubFal([]));
+  try {
+    const r = await fetch(s.base + '/api/remodel/tiers');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(r.headers.get('referrer-policy'), 'no-referrer');
+    assert.match(r.headers.get('content-security-policy'), /default-src 'none'/);
+  } finally { await s.close(); }
 });
 
 test('fill engine with price set: sends a heuristic PNG mask sized to the photo, same retention headers', async () => {

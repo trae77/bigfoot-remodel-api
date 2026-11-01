@@ -28,4 +28,4 @@ One fal call per changed region: floor, then cabinets, then counters (walls/back
 Each prompt edits one region only, excludes tables, chairs, stools and other furniture, and the floor pass carries
 an anti-stripe guard. Engines (`engines.cjs`): `kontext` (default, prompt-scoped, no mask) and `fill`
 (fal FLUX pro fill with a free heuristic band mask; only enabled when `REMODEL_FILL_USD` is set from fal's price page).
-Every call is reserved in the D1 caps before the first one goes out. Max 3 calls per render ($0.12 on Kontext pro).
+Every call is reserved in the D1 caps before the first one goes out. Max 3 calls per render: $0.12 on Kontext pro, $0.24 on Kontext max ($0.08/call), and at most $0.48 on fill (REMODEL_FILL_USD is hard-capped at $0.16/call; above that fill is refused with 503). Regions OFF always uses Kontext. A monthly dollar cap (REMODEL_MONTHLY_USD_CAP, default $10) is reserved in D1 per call before any fal call.

@@ -386,7 +386,7 @@ function resolvedConfig() {
   return {
     twoPass: twoPassOn(),
     regions: regionsOn(),
-    engine: engines.engineId(),
+    engine: selectEngine() ? selectEngine().id : 'unavailable',
     model: falModel().id,
     guidance: falGuidance(),
     floorGuidance: floorGuidance(),
@@ -468,14 +468,30 @@ engines.register('kontext', {
 // fal FLUX.1 [pro] Fill: prompt + mask inpaint. Price is NOT hard-coded (never invent prices): the engine is
 // only available when REMODEL_FILL_USD is set to a positive number from fal's model page; otherwise kontext is used.
 const FILL_MODEL = 'fal-ai/flux-pro/v1/fill';
-function fillUsd() { const n = Number((process.env.REMODEL_FILL_USD || '').trim()); return Number.isFinite(n) && n > 0 && n < 1 ? n : null; }
+// Hard ceiling (QA R64): any value above 0.16 USD per call, or not a number, disables fill (fail closed, 503).
+const MAX_FILL_USD = 0.16;
+function fillUsd() { const n = Number((process.env.REMODEL_FILL_USD || '').trim()); return Number.isFinite(n) && n > 0 && n <= MAX_FILL_USD ? n : null; }
 engines.register('fill', {
   usesMask: true,
   available: () => fillUsd() != null,
   model: () => FILL_MODEL,
   usdPerCall: () => fillUsd(),
-  run: (c, imageUrl, o) => callFalJson(FILL_MODEL, { prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, mask_url: c.mask_url, num_images: 1, output_format: 'jpeg', safety_tolerance: '2' }, o),
+  run: (c, imageUrl, o) => {
+    // Fill must never run without a mask (it would repaint the whole photo).
+    if (typeof c.mask_url !== 'string' || !c.mask_url.startsWith('data:image/png;base64,')) { const e = new Error('fill without mask'); e.code = 'NO_MASK'; return Promise.reject(e); }
+    return callFalJson(FILL_MODEL, { prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, mask_url: c.mask_url, num_images: 1, output_format: 'jpeg', safety_tolerance: '2' }, o);
+  },
 });
+/**
+ * The engine this request will use. Regions OFF: always kontext (engine + provider). Regions ON: the
+ * REMODEL_REGION_ENGINE choice; 'fill' without a valid price (at most 0.16 USD) returns null = refuse (fail closed).
+ */
+function selectEngine() {
+  if (!regionsOn()) return engines.ENGINES.kontext;
+  const want = (process.env.REMODEL_REGION_ENGINE || '').trim().toLowerCase();
+  if (want === 'fill' && fillUsd() == null) return null;
+  return engines.getEngine();
+}
 
 /** Generic fal.run POST with the same retention headers and error shape as callFalKontext. */
 async function callFalJson(model, body, opts = {}) {
@@ -538,10 +554,12 @@ function createRemodelGenerateHandler(deps) {
       let input = image_url;
       let cleaned = false;
       const runCleanup = () => { if (!cleaned) { cleaned = true; cleanup(); } };
-      try {
-      const engine = engines.getEngine();
+      const engine = selectEngine();
+      if (!engine) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      if (engine.usesMask && calls.some((c) => !c.region)) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
       const size = engine.usesMask ? imageSize(image_url) : null;
       if (engine.usesMask && !size) return res.status(400).json({ error: 'Could not read image size', honesty: HONESTY });
+      try {
       for (const c of calls) {
         const call = { ...c, ...(size && c.region ? { mask_url: regions.heuristicMask(c.region, size.w, size.h) } : {}) };
         const d = await engine.run(call, input, { fetchImpl: deps.fetchImpl });
@@ -598,11 +616,12 @@ function createRemodelGenerateHandler(deps) {
         afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
-        provider: engines.getEngine().model(),
+        provider: engine.model(),
         seed: data.seed ?? null,
         projectId,
       });
     } catch (e) {
+      if (e && e.code === 'NO_MASK') return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
       if (e && e.code === 'MISSING_KEY') {
         return res.status(503).json({ error: 'Remodel generate is not configured (missing FAL_KEY)', honesty: HONESTY });
       }
@@ -616,6 +635,9 @@ function createRemodelGenerateHandler(deps) {
 }
 
 module.exports = {
+  selectEngine,
+  fillUsd,
+  MAX_FILL_USD,
   regionsOn,
   imageSize,
   withNegatives,

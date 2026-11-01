@@ -10,6 +10,7 @@ const {
   validateGenerateBody,
   HONESTY,
   planCalls,
+  selectEngine,
   resolvedConfig,
 } = require('./remodelGenerate.cjs');
 
@@ -30,6 +31,8 @@ function createApp(opts = {}) {
   app.use((_req, res, next) => {
     res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Referrer-Policy', 'no-referrer');
+    res.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
     return next();
   });
 
@@ -139,14 +142,16 @@ function createApp(opts = {}) {
     const n = planCalls(req.remodelValid).length;
     const { day, month } = caps.periodKeys();
     const ipKey = sec.ipHash(cfg.secret, req.remodelIp);
+    const capItems = [
+      [`m:${month}:global`, cfg.globalMonthly, 'month'],
+      [`d:${day}:global`, cfg.globalDaily, 'day'],
+      [`d:${day}:ip:${ipKey}`, cfg.perIpDaily, 'ip'],
+    ];
+    const capKeys = capItems.map((x) => x[0]);
     let r;
     try {
       // Durable, atomic, all-or-nothing reservation BEFORE any fal call. Fails closed on any store problem.
-      r = await caps.reserveAll(capStore, [
-        [`m:${month}:global`, cfg.globalMonthly, 'month'],
-        [`d:${day}:global`, cfg.globalDaily, 'day'],
-        [`d:${day}:ip:${ipKey}`, cfg.perIpDaily, 'ip'],
-      ], n);
+      r = await caps.reserveAll(capStore, capItems, n);
     } catch (_e) {
       console.warn('remodel_cap_store_unavailable');
       return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
@@ -155,6 +160,17 @@ function createApp(opts = {}) {
       const msg = r.which === 'month' ? 'Monthly preview limit reached. Try again next month.'
         : r.which === 'ip' ? 'Daily preview limit reached for this network.' : 'Daily preview limit reached. Try again tomorrow.';
       return res.status(429).json({ error: msg, honesty: HONESTY });
+    }
+    // Monthly dollar cap (QA R64), in cents, reserved for every call at the engine's per-call price.
+    const engine = selectEngine();
+    if (!engine) { await caps.releaseAll(capStore, capKeys, n); return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY }); }
+    const cents = Math.ceil(engine.usdPerCall() * 100 - 1e-9) * n;
+    let u;
+    try { u = await caps.reserveAll(capStore, [[`m:${month}:usd_cents`, caps.monthlyUsdCapCents(), 'usd']], cents); } catch (_e) { u = null; }
+    if (!u || !u.ok) {
+      await caps.releaseAll(capStore, capKeys, n);
+      if (!u) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      return res.status(429).json({ error: 'Monthly preview limit reached. Try again next month.', honesty: HONESTY });
     }
     if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), n)) {
       // Cap slots stay reserved (fail-safe for spend).
