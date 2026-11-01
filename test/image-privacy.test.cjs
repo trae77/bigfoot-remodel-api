@@ -168,7 +168,7 @@ test('P3 sweep timer is unref-ed and cleared on close', async () => {
   assert.ok(stopped);
 });
 
-test('fal delete failure raises ALERT log with no URL, key or request id', async () => {
+test('fal delete failure raises ALERT log with the fal request id (per Manager), no URL or key', async () => {
   const log = []; const s = await boot(mockFal(log, { deleteOk: false }));
   const orig = console.error; const errs = []; console.error = (...a) => errs.push(a.join(' '));
   try {
@@ -177,7 +177,7 @@ test('fal delete failure raises ALERT log with no URL, key or request id', async
     await new Promise((r) => setTimeout(r, 50));
     const alert = errs.find((e) => e.includes('ALERT fal_payload_delete_failed'));
     assert.ok(alert, 'alert emitted');
-    assert.ok(!/fal\.media|fake-fal/.test(alert) && !alert.includes(RID));
+    assert.ok(!/fal\.media|fake-fal/.test(alert) && alert.includes(RID));
   } finally { console.error = orig; await s.close(); }
 });
 
@@ -190,7 +190,7 @@ test('P2-1 slow 3s fal delete does not delay the client response', async () => {
   } finally { await s.close(); }
 });
 
-test('P2-1 hung fal delete times out (~3s) and ALERTs with reason timeout, no URL/key/id', async () => {
+test('P2-1 hung fal delete times out (~3s) and ALERTs with reason timeout and request id, no URL/key', async () => {
   const log = []; const s = await boot(mockFal(log, { deleteHang: true }));
   const orig = console.error; const errs = []; console.error = (...a) => errs.push(a.join(' '));
   try {
@@ -199,7 +199,7 @@ test('P2-1 hung fal delete times out (~3s) and ALERTs with reason timeout, no UR
     await new Promise((r) => setTimeout(r, 3400));
     const alert = errs.find((e) => e.includes('ALERT fal_payload_delete_failed'));
     assert.ok(alert && alert.includes('"timeout"'), 'timeout alert');
-    assert.ok(!/fal\.media|fake-fal/.test(alert) && !alert.includes(RID));
+    assert.ok(!/fal\.media|fake-fal/.test(alert) && alert.includes(RID));
   } finally { console.error = orig; await s.close(); }
 });
 

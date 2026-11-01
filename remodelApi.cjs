@@ -147,6 +147,12 @@ function createApp(opts = {}) {
     return next();
   }
 
+  // Tier picker options: ids, labels and availability only. No prices (estimator sell HOLD).
+  app.get('/api/remodel/tiers', (_req, res) => {
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(require('./productCatalog.cjs').publicCatalog());
+  });
+
   app.post(
     '/api/remodel/generate',
     async (req, res, next) => {
