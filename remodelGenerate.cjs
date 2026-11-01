@@ -6,6 +6,7 @@
 
 const FAL_MODEL = 'fal-ai/flux-pro/kontext';
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
+const store = require('./imageStore.cjs');
 const COST_PER_STILL_USD = 0.04;
 const MAX_GENERATES_PER_SESSION = 5;
 const MAX_SESSION_SPEND_USD = 0.25;
@@ -175,6 +176,8 @@ async function callFalKontext(input, opts = {}) {
     err.falStatus = res.status;
     throw err;
   }
+  const rid = res.headers && res.headers.get ? res.headers.get('x-fal-request-id') : null;
+  if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
   return data;
 }
 
@@ -216,10 +219,23 @@ function createRemodelGenerateHandler(deps) {
       }
 
       const data = await callFalKontext({ prompt, image_url }, { fetchImpl: deps.fetchImpl });
-      const afterImageUrl = data?.images?.[0]?.url;
-      if (!afterImageUrl) {
+      const falUrl = data?.images?.[0]?.url;
+      if (!falUrl) {
         return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
       }
+      // Privacy: copy the render into private in-process storage, then delete it from fal.
+      // The public fal URL is never sent to the client.
+      const fetchImpl = deps.fetchImpl || globalThis.fetch;
+      let stored;
+      try {
+        stored = await store.fetchFalImage(falUrl, fetchImpl);
+      } finally {
+        const del = await store.deleteFalPayload(data.__falRequestId, getFalKey(), fetchImpl);
+        if (!del.ok) console.warn('fal payload delete not confirmed', del.status || del.reason);
+      }
+      const id = deps.imageStore.put(stored.buf, stored.type);
+      const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
+      const afterImageUrl = store.signedImagePath(secret, id);
 
       budget.count += 1;
       budget.spendUsd += COST_PER_STILL_USD;
@@ -228,6 +244,7 @@ function createRemodelGenerateHandler(deps) {
 
       return res.status(200).json({
         afterImageUrl,
+        afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
         provider: FAL_MODEL,
@@ -238,7 +255,7 @@ function createRemodelGenerateHandler(deps) {
       if (e && e.code === 'MISSING_KEY') {
         return res.status(503).json({ error: 'Remodel generate is not configured (missing FAL_KEY)', honesty: HONESTY });
       }
-      if (e && e.code === 'FAL_UPSTREAM') {
+      if (e && (e.code === 'FAL_UPSTREAM' || e.code === 'FAL_FETCH')) {
         return res.status(502).json({ error: 'Image service failed — try again later', honesty: HONESTY });
       }
       console.error('remodel/generate error', e && e.message ? e.message : e);

@@ -18,6 +18,7 @@ function createApp(opts = {}) {
   const genCounter = opts.genCounter || sec.createDailyCounter();
   const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
   const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
+  const imageStore = opts.imageStore || require('./imageStore.cjs').createImageStore();
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', false);
@@ -50,6 +51,22 @@ function createApp(opts = {}) {
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true, service: 'bigfoot-remodel-api' });
   });
+
+  // Private render download: HMAC-signed, <=15 min, random id only. No Origin needed (used in <img src>).
+  app.get('/api/remodel/image/:id', (req, res) => {
+    const cfg = sec.getConfig();
+    const { exp, sig } = req.query;
+    if (!require('./imageStore.cjs').verifyImageSig(cfg.secret, req.params.id, exp, String(sig || ''))) {
+      return res.status(403).json({ error: 'Link expired or invalid', honesty: HONESTY });
+    }
+    const e = imageStore.get(req.params.id);
+    if (!e) return res.status(404).json({ error: 'Not found', honesty: HONESTY });
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Content-Type', e.type);
+    return res.send(e.buf);
+  });
+  const sweepTimer = setInterval(() => imageStore.sweep(), 60 * 1000);
+  if (sweepTimer.unref) sweepTimer.unref();
 
   // Strict Origin gate on every /api/remodel/* request (incl. preflight). No Origin => 403.
   app.use('/api/remodel', (req, res, next) => {
@@ -141,8 +158,10 @@ function createApp(opts = {}) {
       getClientFromToken: async (req) => req.remodelClient || null,
       ownerTokens: new Set(),
       fetchImpl: opts.fetchImpl,
+      imageStore,
     })
   );
+
 
   // JSON 404 for unknown routes (no Express HTML page).
   app.use((_req, res) => res.status(404).json({ error: 'Not found', honesty: HONESTY }));
