@@ -560,24 +560,27 @@ async function callFalJson(model, body, opts = {}) {
  */
 function createRemodelGenerateHandler(deps) {
   return async function remodelGenerate(req, res) {
+    // Any response sent before the first fal call releases this request's cap reservations (QA R65).
+    let started = false;
+    const early = async (code, obj) => { if (!started && typeof req.remodelReleaseAll === 'function') { try { await req.remodelReleaseAll(); } catch (_e) { /* fail-safe: slots stay used */ } } return res.status(code).json(obj); };
     try {
       const client = await deps.getClientFromToken(req);
       const auth = (req.headers.authorization || '').toString();
       const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
       const isOwner = Boolean(token && deps.ownerTokens && deps.ownerTokens.has(token));
       if (!client && !isOwner) {
-        return res.status(401).json({ error: 'Unauthorized' });
+        return early(401, { error: 'Unauthorized' });
       }
 
       if (!getFalKey()) {
-        return res.status(503).json({
+        return early(503, {
           error: 'Remodel generate is not configured (missing FAL_KEY)',
           honesty: HONESTY,
         });
       }
 
       const v = req.remodelValid || validateGenerateBody(req.body);
-      if (v.error) return res.status(v.status || 400).json({ error: v.error, honesty: HONESTY });
+      if (v.error) return early(v.status || 400, { error: v.error, honesty: HONESTY });
       const { projectId, image_url } = v;
       const calls = planCalls(v);
 
@@ -586,7 +589,7 @@ function createRemodelGenerateHandler(deps) {
       const remaining = remainingGenerates(budget);
       // Every fal call this request will make must fit the session cap before the first one goes out.
       if (remaining < calls.length) {
-        return res.status(429).json({
+        return early(429, {
           error: 'Session preview limit reached. Start a new browser session or try later.',
           remainingSessionGenerates: 0,
           honesty: HONESTY,
@@ -599,16 +602,17 @@ function createRemodelGenerateHandler(deps) {
       let cleaned = false;
       const runCleanup = () => { if (!cleaned) { cleaned = true; cleanup(); } };
       const engine = selectEngine();
-      if (!engine) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
-      if (engine.usesMask && calls.some((c) => !c.region)) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      if (!engine) return early(503, { error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      if (engine.usesMask && calls.some((c) => !c.region)) return early(503, { error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
       // Per-render ceiling checked up front on the planned calls, so a render never starts if it cannot finish.
-      if (calls.length * engine.usdPerCall() > renderMaxUsd() + 1e-9) return res.status(429).json({ error: 'Preview limit reached for this render. Try fewer changes.', honesty: HONESTY });
+      if (calls.length * engine.usdPerCall() > renderMaxUsd() + 1e-9) return early(429, { error: 'Preview limit reached for this render. Try fewer changes.', honesty: HONESTY });
       const backup = failoverEngine(engine);
       const size = engine.usesMask || backup ? imageSize(image_url) : null;
-      if ((engine.usesMask || backup) && !size) return res.status(400).json({ error: 'Could not read image size', honesty: HONESTY });
+      if ((engine.usesMask || backup) && !size) return early(400, { error: 'Could not read image size', honesty: HONESTY });
       try {
       let renderUsd = 0;
       for (const c of calls) {
+        started = true;
         const call = { ...c, ...(size ? { mask_url: regions.heuristicMask(c.region || 'finishes', size.w, size.h) } : {}) };
         if (!engine.usesMask) delete call.mask_url;
         const charge = (eng) => { budget.count += 1; budget.spendUsd += eng.usdPerCall(); budget.updatedAt = Date.now(); sessionSpend.set(sessionKey, budget); renderUsd += eng.usdPerCall(); };

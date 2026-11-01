@@ -148,45 +148,57 @@ function createApp(opts = {}) {
       [`d:${day}:ip:${ipKey}`, cfg.perIpDaily, 'ip'],
     ];
     const capKeys = capItems.map((x) => x[0]);
+    const usdKey = `m:${month}:usd_cents`;
+    const paused = () => res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+    // QA R65 P2: every check that can refuse runs BEFORE any reservation, so a refusal reserves nothing.
+    const engine = selectEngine();
+    if (!engine) return paused();
+    if (n > cfg.perTokenMax) return res.status(429).json({ error: 'Try fewer changes', honesty: HONESTY });
+    const cents = Math.ceil(engine.usdPerCall() * 100 - 1e-9) * n;
+    // Token uses first (in-process, reversible); given back if any durable reservation then fails.
+    if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), n)) return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
+    const giveToken = (k) => { if (p) tokenUses.give(p, k); };
     let r;
     try {
       // Durable, atomic, all-or-nothing reservation BEFORE any fal call. Fails closed on any store problem.
       r = await caps.reserveAll(capStore, capItems, n);
     } catch (_e) {
+      giveToken(n);
       console.warn('remodel_cap_store_unavailable');
-      return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      return paused();
     }
     if (!r.ok) {
+      giveToken(n);
       const msg = r.which === 'month' ? 'Monthly preview limit reached. Try again next month.'
         : r.which === 'ip' ? 'Daily preview limit reached for this network.' : 'Daily preview limit reached. Try again tomorrow.';
       return res.status(429).json({ error: msg, honesty: HONESTY });
     }
     // Monthly dollar cap (QA R64), in cents, reserved for every call at the engine's per-call price.
-    const engine = selectEngine();
-    if (!engine) { await caps.releaseAll(capStore, capKeys, n); return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY }); }
-    const cents = Math.ceil(engine.usdPerCall() * 100 - 1e-9) * n;
     let u;
-    try { u = await caps.reserveAll(capStore, [[`m:${month}:usd_cents`, caps.monthlyUsdCapCents(), 'usd']], cents); } catch (_e) { u = null; }
+    try { u = await caps.reserveAll(capStore, [[usdKey, caps.monthlyUsdCapCents(), 'usd']], cents); } catch (_e) { u = null; }
     if (!u || !u.ok) {
-      await caps.releaseAll(capStore, capKeys, n);
-      if (!u) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      await caps.releaseAll(capStore, capKeys, n); giveToken(n);
+      if (!u) return paused();
       return res.status(429).json({ error: 'Monthly preview limit reached. Try again next month.', honesty: HONESTY });
     }
-    // Failover retry: one more call, reserved atomically on every count cap and the dollar cap before it goes out.
+    // The handler calls this on any exit BEFORE its first fal call (session limit, ceiling, missing key, bad image...).
+    let released = false;
+    req.remodelReleaseAll = async () => {
+      if (released) return; released = true;
+      await caps.releaseAll(capStore, capKeys, n); await caps.releaseAll(capStore, [usdKey], cents); giveToken(n);
+    };
+    // Failover retry: one more call. Token taken first, then counts, then dollars; each step undone if a later one fails.
     req.remodelReserveExtra = async (usd) => {
+      if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), 1)) return false;
+      const c = Math.ceil(usd * 100 - 1e-9);
       try {
         const a = await caps.reserveAll(capStore, capItems, 1);
-        if (!a.ok) return false;
-        const b = await caps.reserveAll(capStore, [[`m:${month}:usd_cents`, caps.monthlyUsdCapCents(), 'usd']], Math.ceil(usd * 100 - 1e-9));
-        if (!b.ok) { await caps.releaseAll(capStore, capKeys, 1); return false; }
-        if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), 1)) return false;
+        if (!a.ok) { giveToken(1); return false; }
+        let b; try { b = await caps.reserveAll(capStore, [[usdKey, caps.monthlyUsdCapCents(), 'usd']], c); } catch (_e) { b = null; }
+        if (!b || !b.ok) { await caps.releaseAll(capStore, capKeys, 1); giveToken(1); return false; }
         return true;
-      } catch (_e) { return false; }
+      } catch (_e) { giveToken(1); return false; }
     };
-    if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), n)) {
-      // Cap slots stay reserved (fail-safe for spend).
-      return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
-    }
     return next();
   }
 

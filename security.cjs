@@ -137,6 +137,10 @@ function createTokenUseTracker() {
       map.set(payload.n, row);
       return true;
     },
+    /** Give back n uses taken by this request when it exits before any fal call. */
+    give(payload, n = 1) {
+      const row = map.get(payload.n); if (row) row.count = Math.max(0, row.count - n);
+    },
     size() { return map.size; },
   };
 }
