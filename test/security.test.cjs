@@ -313,3 +313,25 @@ test('P3 key handling: only FAL_KEY is read; split/base64 variants are ignored',
   assert.equal(g.getFalKey(), 'fake-key');
   setEnv({});
 });
+
+test('BF #46 P2-1: valid token + generate body {} -> 400 before caps and fal (counter untouched, fal never called)', async () => {
+  setEnv({ FAL_KEY: 'fake-fal', REMODEL_TOKEN_SECRET: SECRET });
+  for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
+  const sec = require('../security.cjs');
+  const genCounter = sec.createDailyCounter();
+  let incs = 0; const realInc = genCounter.inc.bind(genCounter); genCounter.inc = (...a) => { incs++; return realInc(...a); };
+  const urls = []; const spyFetch = async (u, i) => { urls.push(String(u)); return fakeFetch(u, i); };
+  const { createApp } = require('../remodelApi.cjs');
+  const server = http.createServer(createApp({ fetchImpl: spyFetch, genCounter }));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const IP = '8.9.0.1';
+    const tok = await getToken(base, IP);
+    const r = await call(base, '/api/remodel/generate', { token: tok, ip: IP, body: {} });
+    assert.equal(r.status, 400);
+    assert.equal(urls.length, 0, 'fal (or any upstream) never called');
+    assert.equal(incs, 0, 'daily cap not incremented');
+    assert.equal(genCounter.get('global'), 0); assert.equal(genCounter.get('ip:' + IP), 0);
+  } finally { await new Promise((r) => server.close(r)); }
+});
