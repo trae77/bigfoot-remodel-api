@@ -22,3 +22,10 @@ Set `FAL_KEY` on the host only (the only key var read; see DEPLOY-NOTE-P1-3.md).
 - Storage cost: $0 (Render free instance RAM). No bucket, no new account. R2/S3 were not used because they need a billing setup.
 - fal delete needs a fal key with `models:requests:write` + `assets:write` (fal "FULL" preset). If the key lacks them, the delete fails, an `ALERT fal_payload_delete_failed` error is logged (no URL, key or id; per-file failures in a 200 also count), and fal's copy stays at an unguessable public URL until fal's own expiry. The client still never sees it.
 - Tests mock fal (`test/image-privacy.test.cjs`). No real renders.
+
+## Region targeting (REMODEL_REGIONS, default OFF)
+One fal call per changed region: floor, then cabinets, then counters (walls/backsplash ride on the last pass).
+Each prompt edits one region only, excludes tables, chairs, stools and other furniture, and the floor pass carries
+an anti-stripe guard. Engines (`engines.cjs`): `kontext` (default, prompt-scoped, no mask) and `fill`
+(fal FLUX pro fill with a free heuristic band mask; only enabled when `REMODEL_FILL_USD` is set from fal's price page).
+Every call is reserved in the D1 caps before the first one goes out. Max 3 calls per render ($0.12 on Kontext pro).
