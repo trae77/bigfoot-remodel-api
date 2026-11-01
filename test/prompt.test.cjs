@@ -11,7 +11,6 @@ test('light oak floor uses exact wide-plank wording', () => {
 test('other wood floors get the same plank wording', () => {
   assert.equal(floorPhrase('Dark walnut'), `wide-plank dark walnut ${TAIL}`);
   assert.equal(floorPhrase('Natural maple hardwood'), `wide-plank natural maple ${TAIL}`);
-  assert.equal(floorPhrase('Hickory herringbone'), `wide-plank hickory ${TAIL}`);
   assert.equal(floorPhrase('Hardwood'), `wide-plank ${TAIL}`);
 });
 
@@ -19,4 +18,11 @@ test('non-wood floors and unchanged stay as-is', () => {
   assert.equal(floorPhrase('Gray porcelain tile'), 'Gray porcelain tile');
   assert.equal(floorPhrase('Oak-look vinyl plank'), 'Oak-look vinyl plank');
   assert.match(buildPrompt('kitchen', {}), /- Floor: unchanged\n/);
+});
+
+test('explicit herringbone/parquet keeps the pattern and wood type', () => {
+  assert.equal(floorPhrase('White oak herringbone'), 'white oak hardwood flooring in a herringbone pattern');
+  assert.equal(floorPhrase('Walnut parquet floors'), 'walnut hardwood flooring in a parquet pattern');
+  assert.equal(floorPhrase('Herringbone'), 'hardwood flooring in a herringbone pattern');
+  assert.ok(!/no parquet or herringbone/.test(floorPhrase('Hickory herringbone')));
 });

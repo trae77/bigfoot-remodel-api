@@ -67,6 +67,9 @@ function createApp(opts = {}) {
   });
   const sweepTimer = setInterval(() => imageStore.sweep(), 60 * 1000);
   if (sweepTimer.unref) sweepTimer.unref();
+  app.stopSweep = () => clearInterval(sweepTimer);
+  const listen = app.listen.bind(app);
+  app.listen = (...a) => { const srv = listen(...a); srv.on('close', app.stopSweep); return srv; };
 
   // Strict Origin gate on every /api/remodel/* request (incl. preflight). No Origin => 403.
   app.use('/api/remodel', (req, res, next) => {

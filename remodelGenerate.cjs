@@ -84,7 +84,13 @@ const NOT_WOOD_RE = /\b(tile|vinyl|lvp|laminate|carpet|concrete|stone|marble|por
 /** Wood floor choices become explicit wide-plank wording so the model doesn't drift to parquet or herringbone. */
 function floorPhrase(v) {
   const raw = String(v).trim();
-  if (!WOOD_RE.test(raw) || NOT_WOOD_RE.test(raw)) return raw;
+  if ((!WOOD_RE.test(raw) && !/\b(herringbone|parquet|basket-?weave)\b/i.test(raw)) || NOT_WOOD_RE.test(raw)) return raw;
+  const pat = /\bherringbone\b/i.test(raw) ? 'herringbone' : /\b(parquet|basket-?weave)\b/i.test(raw) ? 'parquet' : null;
+  if (pat) {
+    // Explicit pattern choice is kept, with its wood type.
+    const wood = raw.replace(/\b(hardwood|wood|floor(?:ing|s)?|planks?|herringbone|parquet|basket-?weave|pattern)\b/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    return `${wood ? wood + ' ' : ''}hardwood flooring in a ${pat} pattern`;
+  }
   if (/\blight\b/i.test(raw) && /\boak\b/i.test(raw)) return `wide-plank light oak ${PLANK_TAIL}`;
   const desc = raw.replace(/\b(hardwood|wood|floor(?:ing|s)?|planks?|wide-plank|wide|parquet|herringbone)\b/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
   return `wide-plank ${desc ? desc + ' ' : ''}${PLANK_TAIL}`;
@@ -231,6 +237,12 @@ function createRemodelGenerateHandler(deps) {
       }
 
       const data = await callFalKontext({ prompt, image_url }, { fetchImpl: deps.fetchImpl });
+      // fal has billed once it returns: charge the session now, even if the download below fails.
+      budget.count += 1;
+      budget.spendUsd += COST_PER_STILL_USD;
+      budget.updatedAt = Date.now();
+      sessionSpend.set(sessionKey, budget);
+
       const falUrl = data?.images?.[0]?.url;
       if (!falUrl) {
         return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
@@ -248,11 +260,6 @@ function createRemodelGenerateHandler(deps) {
       const id = deps.imageStore.put(stored.buf, stored.type);
       const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
       const afterImageUrl = store.signedImagePath(secret, id);
-
-      budget.count += 1;
-      budget.spendUsd += COST_PER_STILL_USD;
-      budget.updatedAt = Date.now();
-      sessionSpend.set(sessionKey, budget);
 
       return res.status(200).json({
         afterImageUrl,

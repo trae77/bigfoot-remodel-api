@@ -50,6 +50,32 @@ const FAL_HOST_RE = /^(?:[a-z0-9-]+\.)*fal\.media$/;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
+const MAGIC = {
+  'image/jpeg': (b) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/png': (b) => b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/webp': (b) => b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
+};
+function magicMatches(type, buf) { return Boolean(MAGIC[type] && MAGIC[type](buf)); }
+
+/** Read a fetch body as a stream, aborting as soon as it passes max bytes. */
+async function readCapped(r, max) {
+  const tooBig = () => Object.assign(new Error('fal image size not allowed'), { code: 'FAL_FETCH' });
+  if (r.body && typeof r.body.getReader === 'function') {
+    const reader = r.body.getReader(); const chunks = []; let n = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value.length;
+      if (n > max) { try { await reader.cancel(); } catch {} throw tooBig(); }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, n);
+  }
+  const buf = Buffer.from(await r.arrayBuffer()); // fallback for non-stream mocks
+  if (buf.length > max) throw tooBig();
+  return buf;
+}
+
 /** Download fal output bytes server-side. Only https fal.media hosts; bounded size; image types only. */
 async function fetchFalImage(url, fetchImpl) {
   let u; try { u = new URL(url); } catch { throw Object.assign(new Error('bad fal url'), { code: 'FAL_FETCH' }); }
@@ -58,8 +84,11 @@ async function fetchFalImage(url, fetchImpl) {
   if (!r.ok) throw Object.assign(new Error('fal image fetch failed'), { code: 'FAL_FETCH' });
   const type = String((r.headers && r.headers.get && r.headers.get('content-type')) || '').split(';')[0].trim();
   if (!TYPES.has(type)) throw Object.assign(new Error('fal image type not allowed'), { code: 'FAL_FETCH' });
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (!buf.length || buf.length > MAX_IMAGE_BYTES) throw Object.assign(new Error('fal image size not allowed'), { code: 'FAL_FETCH' });
+  const len = Number(r.headers && r.headers.get && r.headers.get('content-length'));
+  if (Number.isFinite(len) && len > MAX_IMAGE_BYTES) throw Object.assign(new Error('fal image size not allowed'), { code: 'FAL_FETCH' });
+  const buf = await readCapped(r, MAX_IMAGE_BYTES);
+  if (!buf.length) throw Object.assign(new Error('fal image size not allowed'), { code: 'FAL_FETCH' });
+  if (!magicMatches(type, buf)) throw Object.assign(new Error('fal image bytes do not match type'), { code: 'FAL_FETCH' });
   return { buf, type };
 }
 
@@ -74,4 +103,4 @@ async function deleteFalPayload(requestId, key, fetchImpl) {
   } catch { return { ok: false, reason: 'network' }; }
 }
 
-module.exports = { createImageStore, signedImagePath, verifyImageSig, fetchFalImage, deleteFalPayload, URL_TTL_SEC_MAX, MAX_RETENTION_MS, FAL_HOST_RE };
+module.exports = { magicMatches, readCapped, MAX_IMAGE_BYTES, createImageStore, signedImagePath, verifyImageSig, fetchFalImage, deleteFalPayload, URL_TTL_SEC_MAX, MAX_RETENTION_MS, FAL_HOST_RE };

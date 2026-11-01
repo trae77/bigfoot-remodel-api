@@ -97,3 +97,69 @@ test('fal delete failure does not leak fal URL to client', async () => {
     assert.ok(!JSON.stringify(g.json).includes('fal.media'));
   } finally { await s.close(); }
 });
+
+test('P2-1 magic bytes must match declared type (HTML-as-PNG refused)', () => {
+  assert.ok(store.magicMatches('image/jpeg', Buffer.from([0xff, 0xd8, 0xff, 0])));
+  assert.ok(store.magicMatches('image/png', Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0])));
+  assert.ok(store.magicMatches('image/webp', Buffer.from('RIFF\0\0\0\0WEBPVP8 ', 'latin1')));
+  assert.ok(!store.magicMatches('image/png', Buffer.from('<html><script>x</script></html>')));
+  assert.ok(!store.magicMatches('image/png', Buffer.from([0xff, 0xd8, 0xff, 0])), 'JPEG bytes labeled PNG');
+  assert.ok(!store.magicMatches('image/webp', Buffer.from('RIFF\0\0\0\0WAVEfmt ', 'latin1')));
+});
+
+test('P2-1 end-to-end: fal returns HTML labeled image/png -> 502, nothing stored, no fal URL', async () => {
+  const st = store.createImageStore();
+  const f = async (url, init = {}) => {
+    url = String(url);
+    if (url.startsWith('https://fal.run/')) return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': RID }), text: async () => JSON.stringify({ images: [{ url: 'https://v3.fal.media/files/o.png' }] }) };
+    if (url.includes('fal.media')) return { ok: true, status: 200, headers: hdrs({ 'content-type': 'image/png' }), arrayBuffer: async () => Buffer.from('<html>evil</html>') };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const s = await boot(f, st);
+  try {
+    const g = await generate(s.base);
+    assert.equal(g.status, 502);
+    assert.equal(st.size(), 0);
+    assert.ok(!JSON.stringify(g.json).includes('fal.media'));
+  } finally { await s.close(); }
+});
+
+test('P3 streamed download aborts once it passes 10MB; Content-Length precheck', async () => {
+  let cancelled = false, pulled = 0;
+  const chunk = new Uint8Array(1024 * 1024).fill(0xff);
+  const body = { getReader: () => ({ read: async () => { pulled++; return pulled > 50 ? { done: true } : { done: false, value: chunk }; }, cancel: async () => { cancelled = true; } }) };
+  await assert.rejects(store.readCapped({ body }, store.MAX_IMAGE_BYTES), /size/);
+  assert.ok(cancelled); assert.ok(pulled <= 12, 'stopped early: ' + pulled);
+  const big = async () => ({ ok: true, headers: hdrs({ 'content-type': 'image/jpeg', 'content-length': String(11 * 1024 * 1024) }), arrayBuffer: async () => { throw new Error('should not read'); } });
+  await assert.rejects(store.fetchFalImage('https://v3.fal.media/x.jpg', big), /size/);
+});
+
+test('P3 session budget is charged when fal succeeds even if download fails', async () => {
+  const f = async (url) => {
+    url = String(url);
+    if (url.startsWith('https://fal.run/')) return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': RID }), text: async () => JSON.stringify({ images: [{ url: 'https://v3.fal.media/files/o.jpg' }] }) };
+    if (url.includes('fal.media')) return { ok: false, status: 500, headers: hdrs({}) };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const s = await boot(f);
+  try {
+    const g = await generate(s.base);
+    assert.equal(g.status, 502);
+    const budgets = [...require('../remodelGenerate.cjs').sessionSpend.values()];
+    assert.equal(budgets.length, 1);
+    assert.equal(budgets[0].count, 1);
+    assert.ok(budgets[0].spendUsd > 0);
+  } finally { await s.close(); }
+});
+
+test('P3 sweep timer is unref-ed and cleared on close', async () => {
+  const { createApp } = require('../remodelApi.cjs');
+  const app = createApp({ fetchImpl: async () => { throw new Error('x'); } });
+  assert.equal(typeof app.stopSweep, 'function');
+  const srv = app.listen(0, '127.0.0.1');
+  await new Promise((r) => srv.once('listening', r));
+  assert.ok(srv.listeners('close').includes(app.stopSweep), 'stopSweep wired to close');
+  let stopped = false; const orig = app.stopSweep; srv.removeAllListeners('close'); srv.on('close', () => { orig(); stopped = true; });
+  await new Promise((r) => srv.close(r));
+  assert.ok(stopped);
+});
