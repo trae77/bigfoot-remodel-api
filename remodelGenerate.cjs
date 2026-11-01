@@ -562,6 +562,7 @@ function createRemodelGenerateHandler(deps) {
   return async function remodelGenerate(req, res) {
     // Any response sent before the first fal call releases this request's cap reservations (QA R65).
     let started = false;
+    let renderUsd = 0;
     const early = async (code, obj) => { if (!started && typeof req.remodelReleaseAll === 'function') { try { await req.remodelReleaseAll(); } catch (_e) { /* fail-safe: slots stay used */ } } return res.status(code).json(obj); };
     try {
       const client = await deps.getClientFromToken(req);
@@ -610,14 +611,13 @@ function createRemodelGenerateHandler(deps) {
       const size = engine.usesMask || backup ? imageSize(image_url) : null;
       if ((engine.usesMask || backup) && !size) return early(400, { error: 'Could not read image size', honesty: HONESTY });
       try {
-      let renderUsd = 0;
       for (const c of calls) {
-        started = true;
         const call = { ...c, ...(size ? { mask_url: regions.heuristicMask(c.region || 'finishes', size.w, size.h) } : {}) };
         if (!engine.usesMask) delete call.mask_url;
         const charge = (eng) => { budget.count += 1; budget.spendUsd += eng.usdPerCall(); budget.updatedAt = Date.now(); sessionSpend.set(sessionKey, budget); renderUsd += eng.usdPerCall(); };
         if (renderUsd + engine.usdPerCall() > renderMaxUsd() + 1e-9) { const e = new Error('render ceiling'); e.code = 'RENDER_CEILING'; throw e; }
         let d;
+        started = true;
         try {
           d = await withTimeout(engine.run(call, input, { fetchImpl: deps.fetchImpl }), engineTimeoutMs());
           // fal has billed once it returns: charge the session now, even if a later step fails.
@@ -686,6 +686,8 @@ function createRemodelGenerateHandler(deps) {
         projectId,
       });
     } catch (e) {
+      // QA R66 P3: nothing reached fal (thrown before the first call, or a NO_MASK refusal before anything billed): release all.
+      if ((!started || (e && e.code === 'NO_MASK' && renderUsd === 0)) && typeof req.remodelReleaseAll === 'function') { try { await req.remodelReleaseAll(); } catch (_x) { /* fail-safe */ } }
       if (e && e.code === 'RENDER_CEILING') return res.status(429).json({ error: 'Preview limit reached for this render. Try fewer changes.', honesty: HONESTY });
       if (e && e.code === 'FAL_TIMEOUT') return res.status(502).json({ error: 'Image service failed — try again later', honesty: HONESTY });
       if (e && e.code === 'NO_MASK') return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });

@@ -117,3 +117,63 @@ test('failover: token take fails -> no extra count or dollar reservation, no qwe
     assert.equal(s.capStore.peek(`m:${month}:usd_cents`), 4); // only the planned kontext call
   } finally { await s.close(); }
 });
+
+// ---- QA R66: tests that fail if a release line is removed ----
+test('R66-1 handler early exit restores token uses (same token then runs a full 3-call render at REQUESTS_PER_TOKEN=3)', async () => {
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REQUESTS_PER_TOKEN: '3' });
+  try {
+    const t = await token(s.base);
+    process.env.FAL_KEY = '';
+    assert.equal((await gen(s.base, t)).status, 503);
+    process.env.FAL_KEY = 'fake-fal';
+    const r = await gen(s.base, t);
+    assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(runs.length, 3);
+  } finally { await s.close(); }
+});
+
+test('R66-2 failover $ refusal releases the extra count slots', async () => {
+  const runs = []; const s = await boot(stub(runs, { fail: true }), { REMODEL_REGIONS: '1', REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.16', REMODEL_MONTHLY_USD_CAP: '0.10' });
+  try {
+    assert.equal((await gen(s.base, await token(s.base), { counters: 'granite' })).status, 502);
+    assert.equal(runs.length, 1);
+    const { periodKeys } = require('../capStore.cjs'); const { day, month } = periodKeys();
+    assert.equal(s.capStore.peek(`d:${day}:global`), 1);
+    assert.equal(s.capStore.peek(`m:${month}:global`), 1);
+    assert.equal(s.capStore.get('ip:*'), 1);
+    assert.equal(s.capStore.peek(`m:${month}:usd_cents`), 4);
+  } finally { await s.close(); }
+});
+
+test('R66-3 failover count refusal gives the token use back', async () => {
+  const runs = []; const s = await boot(stub(runs, { fail: true }), { REMODEL_REGIONS: '1', REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.05', REMODEL_PER_IP_DAILY: '1', REMODEL_REQUESTS_PER_TOKEN: '2' });
+  try {
+    const t = await token(s.base);
+    assert.equal((await gen(s.base, t, { counters: 'granite' })).status, 502); // planned call used 1 token use; retry refused by per-IP
+    process.env.REMODEL_PER_IP_DAILY = '10'; process.env.REMODEL_FAILOVER = '0';
+    const r = await gen(s.base, t, { counters: 'granite' }); // needs the 2nd use: only there if the retry gave it back
+    assert.notEqual(r.status, 401, JSON.stringify(r.json));
+  } finally { await s.close(); }
+});
+
+test('R66-P3a throw before the first fal call (mask build fails) releases everything: 500, caps and token unchanged', async () => {
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05', REMODEL_REQUESTS_PER_TOKEN: '1' });
+  try {
+    const t = await token(s.base);
+    const r = await gen(s.base, t, { counters: 'granite' }, PNG(9000, 900)); // > 8192 px: heuristicMask throws
+    assert.equal(r.status, 500); assert.equal(runs.length, 0); assert.equal(s.capStore.total(), 0);
+    assert.equal((await gen(s.base, t, { counters: 'granite' })).status, 200); // token use was given back
+  } finally { await s.close(); }
+});
+
+test('R66-P3b NO_MASK on the first call releases everything: 503, caps and token unchanged', async () => {
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05', REMODEL_REQUESTS_PER_TOKEN: '1' });
+  const regions = require('../regionTargeting.cjs'); const orig = regions.heuristicMask;
+  try {
+    const t = await token(s.base);
+    regions.heuristicMask = () => '';
+    const r = await gen(s.base, t, { counters: 'granite' });
+    assert.equal(r.status, 503); assert.equal(runs.length, 0); assert.equal(s.capStore.total(), 0);
+    regions.heuristicMask = orig;
+    assert.equal((await gen(s.base, t, { counters: 'granite' })).status, 200);
+  } finally { regions.heuristicMask = orig; await s.close(); }
+});
