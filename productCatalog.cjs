@@ -10,6 +10,16 @@ const ID_RE = /^[a-z_]{1,40}\.[a-z_]{1,20}$/;
 const PRICE_RE = /\$\s?\d|\b\d+(?:\.\d+)?\s?(?:usd|dollars?)\b/i;
 let cached = null;
 
+// A trailing model/SKU token: has a digit, is mostly caps/digits/dashes, e.g. I96711LP3, KB36-UF, TSTB-TS404-LR-25X96.
+const SKU_TAIL_RE = /\s+(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+/** Public names never end in a SKU or model number, and never carry case sizes in parentheses. */
+function cleanDisplayName(v) {
+  if (typeof v !== 'string') return null;
+  let t = v.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  while (SKU_TAIL_RE.test(t)) t = t.replace(SKU_TAIL_RE, '').trim();
+  return t || null;
+}
+
 function loadCatalog(file) {
   const f = file || process.env.REMODEL_PRODUCTS_FILE || path.join(__dirname, 'config', 'products.bigfoot.json');
   const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
@@ -23,7 +33,7 @@ function loadCatalog(file) {
     if (!catIds.has(p.category) || !tiers.includes(p.tier)) continue;
     if (typeof p.source_url !== 'string' || !/^https:\/\//.test(p.source_url)) continue;
     if (typeof p.description !== 'string' || !p.description.trim() || PRICE_RE.test(p.description) || PRICE_RE.test(p.name || '')) continue;
-    byId.set(p.id, { id: p.id, category: p.category, tier: p.tier, name: String(p.name || ''), description: p.description.trim(), tierLabel: typeof p.tierLabel === 'string' ? p.tierLabel : null, displayName: typeof p.displayName === 'string' && p.displayName.trim() ? p.displayName.trim() : null });
+    byId.set(p.id, { id: p.id, category: p.category, tier: p.tier, name: String(p.name || ''), description: p.description.trim(), tierLabel: typeof p.tierLabel === 'string' ? p.tierLabel : null, displayName: cleanDisplayName(p.displayName) });
   }
   const quoteOnly = (raw.quoteOnly || []).filter((q) => q && catIds.has(q.category)).map((q) => ({ category: q.category, tier: String(q.tier), label: String(q.label || 'Quote-only') }));
   return { tiers, categories, byId, quoteOnly };
@@ -72,4 +82,4 @@ function resolveTiers(input, cat = getCatalog()) {
   return { picks };
 }
 
-module.exports = { loadCatalog, getCatalog, resetCatalog, publicCatalog, resolveTiers, PRICE_RE };
+module.exports = { cleanDisplayName, loadCatalog, getCatalog, resetCatalog, publicCatalog, resolveTiers, PRICE_RE };

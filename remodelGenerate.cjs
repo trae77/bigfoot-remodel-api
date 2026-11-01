@@ -88,7 +88,7 @@ function validateGenerateBody(body) {
   return { projectId, room, finishes, image_url: img.image_url, prompt };
 }
 
-const PLANK_TAIL = 'hardwood flooring, long straight planks, no parquet or herringbone';
+const PLANK_TAIL = 'hardwood flooring in long straight parallel planks';
 const WOOD_RE = /\b(oak|walnut|maple|hickory|cherry|ash|birch|pine|teak|acacia|hardwood|wood)\b/i;
 const NOT_WOOD_RE = /\b(tile|vinyl|lvp|laminate|carpet|concrete|stone|marble|porcelain|ceramic|epoxy)\b/i;
 /** Wood floor choices become explicit wide-plank wording so the model doesn't drift to parquet or herringbone. */
@@ -111,38 +111,44 @@ function floorPhrase(v) {
  * Every chosen floor, legacy option or catalog product, is phrased as an explicit full replacement.
  */
 const PATTERN_RE = /\b(herringbone|parquet|basket-?weave|chevron)\b/i;
+// Naming a pattern, even as "no parquet", pulls Kontext toward it, so unwanted patterns are never named.
+const NEGATED_PATTERN_RE = /[,;]?\s*\b(?:no|not|without)\s+(?:parquet|herringbone|chevron|basket-?weave)(?:\s*(?:,|or|and)\s*(?:parquet|herringbone|chevron|basket-?weave))*\b/gi;
 function floorInstruction(v, fromCatalog) {
-  const target = fromCatalog ? String(v).trim() : floorPhrase(v);
-  const patterned = PATTERN_RE.test(target.replace(/no parquet or herringbone/gi, ''));
+  const target = (fromCatalog ? String(v).trim() : floorPhrase(v)).replace(NEGATED_PATTERN_RE, '').replace(/\s+/g, ' ').trim();
+  const patterned = PATTERN_RE.test(target);
   const planks = !patterned && /\b(plank|planks|lvp|hardwood|vinyl|laminate|wood|oak|strips?)\b/i.test(target);
-  const parts = [`replace the existing floor entirely with ${target}`];
-  parts.push(patterned ? 'remove all existing floor pattern and finish' : 'remove all existing floor pattern (including any parquet or herringbone)');
-  if (planks && !/long straight planks/i.test(target)) parts.push('long straight planks');
+  const parts = [`replace the entire existing floor with ${target}`];
+  if (planks && !/long straight (parallel )?planks/i.test(target)) parts.push('laid as long straight parallel planks');
+  parts.push('the new floor covers every visible floor area edge to edge and none of the old floor pattern, color or grain remains');
   return parts.join('; ');
 }
 
+/**
+ * Kontext edits best with a direct instruction first and preservation stated after (BFL Kontext guide).
+ * The floor is the edit it most often skips, so it leads, on its own line, ahead of the other finishes.
+ */
 function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
-  const line = (v) => {
-    if (v == null || v === '') return 'unchanged';
-    return String(v);
-  };
+  const hasFloor = !(f.floor == null || f.floor === '');
+  const others = [
+    ['Cabinet faces', f.cabinets], ['Countertops', f.counters], ['Wall paint/tile', f.walls],
+    ['Backsplash', f.backsplash], ['Vanity', f.vanity], ['Tub/shower', f.tub_shower],
+  ].filter(([, v]) => !(v == null || v === ''));
   return [
-    'Photoreal remodel preview of this exact room. Keep walls, windows, camera angle, and fixture layout identical. Keep cabinet layout and appliance footprints. Do not add people, text overlays, or new furniture. Do not change room dimensions.',
+    `Edit this photo of a ${room || 'kitchen'}.`,
+    ...(hasFloor ? [`Main edit - Floor: ${floorInstruction(f.floor, fromCat.has('floor'))}.`] : []),
+    ...(others.length ? ['Also change these finishes:', ...others.map(([k, v]) => `- ${k}: ${v}`)] : []),
     '',
-    `Room type: ${room || 'kitchen'}.`,
-    'Change only these finishes:',
-    `- Floor: ${f.floor == null || f.floor === '' ? 'unchanged' : floorInstruction(f.floor, fromCat.has('floor'))}`,
-    `- Cabinet faces: ${line(f.cabinets)}`,
-    `- Countertops: ${line(f.counters)}`,
-    `- Wall paint/tile: ${line(f.walls)}`,
-    ...(f.backsplash ? [`- Backsplash: ${f.backsplash}`] : []),
-    ...(f.vanity ? [`- Vanity: ${f.vanity}`] : []),
-    ...(f.tub_shower ? [`- Tub/shower: ${f.tub_shower}`] : []),
-    '',
+    `Keep everything else exactly as in the photo: walls, windows, camera angle, lighting, cabinet layout, appliance footprints, fixture layout and room dimensions${hasFloor ? '' : ', and the floor'}. Do not add people, text overlays, or new furniture.`,
     'Output a single photoreal still suitable as an AI preview.',
   ].join('\n');
+}
+
+/** PUBLIC_API_ORIGIN (e.g. https://bigfoot-remodel-api.onrender.com) makes afterImageUrl absolute; unset keeps the path. */
+function absoluteImageUrl(path) {
+  const o = (process.env.PUBLIC_API_ORIGIN || '').trim().replace(/\/+$/, '');
+  return /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(o) ? o + path : path;
 }
 
 function sessionKeyFromReq(req) {
@@ -175,11 +181,24 @@ function remainingGenerates(row) {
   return Math.max(0, Math.min(byCount, bySpend));
 }
 
-/** Default: send X-Fal-Store-IO: 0 so fal does not keep the request payload (fal sync docs). Only an explicit FAL_STORE_IO=1 omits it. */
+/**
+ * Default: send X-Fal-Store-IO: 0 so fal does not keep the request/response JSON in request history.
+ * Only an explicit FAL_STORE_IO=1 omits it. fal docs: that header does NOT cover CDN files (the output
+ * image on fal.media); those follow X-Fal-Object-Lifecycle-Preference, set here to expire after
+ * FAL_MEDIA_EXPIRATION_SEC (default 3600; 0 omits the header). We copy the image into our own store at once.
+ */
 function falRunHeaders(key) {
   const h = { Authorization: `Key ${key}`, 'Content-Type': 'application/json' };
   if ((process.env.FAL_STORE_IO || '').trim() !== '1') h['X-Fal-Store-IO'] = '0';
+  const raw = (process.env.FAL_MEDIA_EXPIRATION_SEC ?? '').trim();
+  const ttl = raw === '' ? 3600 : Number(raw);
+  if (Number.isInteger(ttl) && ttl > 0) h['X-Fal-Object-Lifecycle-Preference'] = JSON.stringify({ expiration_duration_seconds: ttl });
   return h;
+}
+
+/** Log line for what retention headers actually went out. No URL, no key. */
+function falRetentionLog(headers, requestId) {
+  return { id: requestId || null, storeIo: headers['X-Fal-Store-IO'] ?? 'omitted', mediaTtlSec: headers['X-Fal-Object-Lifecycle-Preference'] ? JSON.parse(headers['X-Fal-Object-Lifecycle-Preference']).expiration_duration_seconds : null };
 }
 
 /**
@@ -208,9 +227,10 @@ async function callFalKontext(input, opts = {}) {
     output_format: 'jpeg',
     safety_tolerance: '2',
   };
+  const headers = falRunHeaders(key);
   const res = await fetchImpl(FAL_RUN_URL, {
     method: 'POST',
-    headers: falRunHeaders(key),
+    headers,
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -228,6 +248,7 @@ async function callFalKontext(input, opts = {}) {
     throw err;
   }
   const rid = res.headers && res.headers.get ? res.headers.get('x-fal-request-id') : null;
+  console.info('fal_run_retention', JSON.stringify(falRetentionLog(headers, rid)));
   if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
   return data;
 }
@@ -301,7 +322,7 @@ function createRemodelGenerateHandler(deps) {
       }
       const id = deps.imageStore.put(stored.buf, stored.type);
       const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
-      const afterImageUrl = store.signedImagePath(secret, id);
+      const afterImageUrl = absoluteImageUrl(store.signedImagePath(secret, id));
 
       return res.status(200).json({
         afterImageUrl,
@@ -335,7 +356,9 @@ module.exports = {
   buildPrompt,
   floorPhrase,
   floorInstruction,
+  absoluteImageUrl,
   falRunHeaders,
+  falRetentionLog,
   validateGenerateBody,
   validateImage,
   MAX_PROMPT_CHARS,
