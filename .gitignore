@@ -1,0 +1,3 @@
+.preview-token
+node_modules/
+.env*

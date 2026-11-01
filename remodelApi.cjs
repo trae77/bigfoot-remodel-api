@@ -1,78 +1,162 @@
 /**
  * Free Render generate-only microservice for Big Foot remodel preview.
- * No SQLite. FAL_KEY server-only. Never log the key.
+ * No SQLite. FAL_KEY server-only. Never log the key, the token secret, or tokens.
+ * P1-3 hardening: signed short-lived tokens, strict Origin, per-IP + global daily caps, fail closed.
  */
 const express = require('express');
-const cors = require('cors');
-const crypto = require('crypto');
 const {
   createRemodelGenerateHandler,
   getFalKey,
+  validateGenerateBody,
   HONESTY,
 } = require('./remodelGenerate.cjs');
 
-const app = express();
-const PORT = process.env.PORT || 4000;
-const ALLOWED = new Set(
-  (process.env.CORS_ORIGINS || 'https://bigfoot-preview.ttawebdev.com,http://localhost:5173,http://127.0.0.1:5173')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
-const PREVIEW_TOKEN = (process.env.REMODEL_PREVIEW_TOKEN || '').trim();
-const ownerTokens = new Set();
+const BODY_LIMIT = '10mb';
+const sec = require('./security.cjs');
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin || ALLOWED.has(origin)) return cb(null, true);
-      return cb(new Error('CORS blocked'));
-    },
-  })
-);
-app.use(express.json({ limit: '12mb' }));
+function createApp(opts = {}) {
+  const genCounter = opts.genCounter || sec.createDailyCounter();
+  const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
+  const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', false);
 
-app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
-    service: 'bigfoot-remodel-api',
-    falConfigured: Boolean(getFalKey()),
-    honesty: HONESTY,
+  // CORS on every /api route (health included): echo only an allowlisted Origin, never credentials.
+  app.use('/api', (req, res, next) => {
+    const cfg = sec.getConfig();
+    const origin = (req.headers.origin || '').toString();
+    res.set('Vary', 'Origin');
+    if (origin && cfg.origins.has(origin)) {
+      res.set('Access-Control-Allow-Origin', origin);
+      res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Remodel-Session');
+      res.set('Access-Control-Max-Age', '600');
+    }
+    req.remodelCfg = cfg;
+    return next();
   });
-});
 
-function bearer(req) {
-  const auth = (req.headers.authorization || '').toString();
-  return auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  // Health: open to Render's health check (no Origin) and to allowed origins; a foreign Origin gets no ACAO.
+  app.options('/api/health', (req, res) => res.status(req.headers.origin && !req.remodelCfg.origins.has(req.headers.origin) ? 403 : 204).end());
+  app.get('/api/health', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, service: 'bigfoot-remodel-api' });
+  });
+
+  // Strict Origin gate on every /api/remodel/* request (incl. preflight). No Origin => 403.
+  app.use('/api/remodel', (req, res, next) => {
+    const cfg = req.remodelCfg;
+    const origin = (req.headers.origin || '').toString();
+    if (!origin || !cfg.origins.has(origin)) {
+      return res.status(403).json({ error: 'Origin not allowed', honesty: HONESTY });
+    }
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    if (!cfg.secret) {
+      return res.status(503).json({ error: 'Remodel API is not configured', honesty: HONESTY });
+    }
+    req.remodelIp = sec.clientIp(req);
+    return next();
+  });
+
+  // 413 for oversized bodies, 400 for bad JSON (see error handler below).
+  app.use(express.json({ limit: BODY_LIMIT }));
+
+  // Issue a short-lived token bound to this Origin and client IP.
+  app.post('/api/remodel/token', (req, res) => {
+    const cfg = req.remodelCfg;
+    const ip = req.remodelIp;
+    if (tokenCounter.get(ip) >= cfg.tokensPerIpDaily) {
+      return res.status(429).json({ error: 'Too many token requests today', honesty: HONESTY });
+    }
+    tokenCounter.inc(ip);
+    const token = sec.issueToken(cfg.secret, { ip, origin: req.headers.origin });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ token, expiresIn: sec.TOKEN_TTL_SEC });
+  });
+
+  function bearer(req) {
+    const auth = (req.headers.authorization || '').toString();
+    return auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  }
+
+  async function getClientFromToken(req) {
+    const cfg = req.remodelCfg;
+    if (!cfg || !cfg.secret) return null;
+    const token = bearer(req);
+    if (!token) return null;
+    if (cfg.serviceToken && sec.safeEqual(token, cfg.serviceToken)) {
+      return { id: 0, role: 'service' };
+    }
+    const p = sec.verifyToken(cfg.secret, token, { ip: req.remodelIp, origin: req.headers.origin });
+    return p ? { id: 0, role: 'preview', payload: p } : null;
+  }
+
+  // Reject malformed requests BEFORE any cap is touched, so junk can't lock out real users.
+  function validateGate(req, res, next) {
+    const v = validateGenerateBody(req.body);
+    if (v.error) return res.status(v.status || 400).json({ error: v.error, honesty: HONESTY });
+    req.remodelValid = v;
+    return next();
+  }
+
+  // Daily caps checked before any fal call; counted per IP and globally, plus a per-token allowance.
+  // Only valid requests reach here. A reserved slot stays used even if fal later fails: fail-safe for spend.
+  function capGate(req, res, next) {
+    const cfg = req.remodelCfg;
+    const p = req.remodelClient && req.remodelClient.payload;
+    if (genCounter.get('global') >= cfg.globalDaily) {
+      return res.status(429).json({ error: 'Daily preview limit reached. Try again tomorrow.', honesty: HONESTY });
+    }
+    if (genCounter.get('ip:' + req.remodelIp) >= cfg.perIpDaily) {
+      return res.status(429).json({ error: 'Daily preview limit reached for this network.', honesty: HONESTY });
+    }
+    if (p && !tokenUses.take(p, cfg.perTokenMax)) {
+      return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
+    }
+    // Reserve the slot before calling fal so concurrent requests can't overshoot the cap.
+    genCounter.inc('global');
+    genCounter.inc('ip:' + req.remodelIp);
+    return next();
+  }
+
+  app.post(
+    '/api/remodel/generate',
+    async (req, res, next) => {
+      const client = await getClientFromToken(req);
+      if (!client) return res.status(401).json({ error: 'Unauthorized', honesty: HONESTY });
+      req.remodelClient = client;
+      return next();
+    },
+    validateGate,
+    capGate,
+    createRemodelGenerateHandler({
+      getClientFromToken: async (req) => req.remodelClient || null,
+      ownerTokens: new Set(),
+      fetchImpl: opts.fetchImpl,
+    })
+  );
+
+  app.use((err, _req, res, _next) => {
+    if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large', honesty: HONESTY });
+    if (err && (err.type === 'entity.parse.failed' || err.status === 400)) {
+      return res.status(400).json({ error: 'Invalid JSON', honesty: HONESTY });
+    }
+    console.error('api error', err && err.message ? err.message : err);
+    res.status(500).json({ error: 'Server error', honesty: HONESTY });
+  });
+
+  return app;
 }
 
-async function getClientFromToken(req) {
-  const token = bearer(req);
-  if (!token) return null;
-  if (PREVIEW_TOKEN && token === PREVIEW_TOKEN) {
-    return { id: 0, role: 'preview' };
-  }
-  // Demo tokens from SPA preview (no SQLite): accept opaque preview-* or demo-* prefixes
-  if (/^(preview|demo|owner)-[A-Za-z0-9_-]{8,}$/.test(token)) {
-    if (token.startsWith('owner-')) ownerTokens.add(token);
-    return { id: 0, role: token.startsWith('owner-') ? 'owner' : 'preview' };
-  }
-  return null;
+module.exports = { createApp };
+
+if (require.main === module) {
+  const PORT = process.env.PORT || 4000;
+  createApp().listen(PORT, () => {
+    const cfg = sec.getConfig();
+    console.log(
+      `bigfoot-remodel-api listening on :${PORT} falConfigured=${Boolean(getFalKey())} tokenSecretConfigured=${Boolean(cfg.secret)}`
+    );
+  });
 }
-
-app.post(
-  '/api/remodel/generate',
-  createRemodelGenerateHandler({ getClientFromToken, ownerTokens })
-);
-
-app.use((err, _req, res, _next) => {
-  if (err && /CORS/.test(String(err.message || err))) {
-    return res.status(403).json({ error: 'Origin not allowed', honesty: HONESTY });
-  }
-  console.error('api error', err && err.message ? err.message : err);
-  res.status(500).json({ error: 'Server error', honesty: HONESTY });
-});
-
-app.listen(PORT, () => {
-  console.log(`bigfoot-remodel-api listening on :${PORT} falConfigured=${Boolean(getFalKey())}`);
-});

@@ -4,9 +4,12 @@
   "private": true,
   "description": "Free Render generate-only API for Big Foot remodel preview (fal Kontext)",
   "main": "remodelApi.cjs",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "start": "node remodelApi.cjs"
+    "start": "node remodelApi.cjs",
+    "test": "node --test test/*.test.cjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -14,19 +14,67 @@ const HONESTY = 'AI preview — not a final design · not a bid';
 /** @type {Map<string, { count: number; spendUsd: number; updatedAt: number }>} */
 const sessionSpend = new Map();
 
+/** One env var, FAL_KEY, set as a Render secret. The old split/base64 variants are gone. */
 function getFalKey() {
-  // Split halves: some hosts redact full key-shaped secrets on inject.
-  const a = (process.env.FAL_KEY_A || '').trim();
-  const b = (process.env.FAL_KEY_B || '').trim();
-  if (a && b) return a + b;
-  if (process.env.FAL_KEY_B64) {
-    try {
-      const decoded = Buffer.from(String(process.env.FAL_KEY_B64).trim(), 'base64').toString('utf8').trim();
-      if (decoded) return decoded;
-    } catch (_) { /* fall through */ }
+  const key = (process.env.FAL_KEY || '').trim();
+  return key;
+}
+
+const MAX_PROMPT_CHARS = 1000;
+const MAX_FINISH_CHARS = 100;
+const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
+// Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
+const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
+const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls'];
+// Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
+const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
+
+const MAGIC = {
+  'image/jpeg': (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/png': (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/webp': (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
+};
+
+/** Accept only data:image/(jpeg|png|webp);base64 whose bytes match the declared type. URLs of any kind are refused. */
+function validateImage(raw) {
+  if (typeof raw !== 'string') return { error: 'imageUrl must be a data:image/jpeg, png or webp URI' };
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(raw.trim());
+  if (!m) return { error: 'imageUrl must be a data:image/jpeg, png or webp URI' };
+  if (m[2].length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) return { error: 'Image is too large', status: 413 };
+  const bytes = Buffer.from(m[2], 'base64');
+  if (!MAGIC[m[1]](bytes)) return { error: 'Image content does not match its type' };
+  return { image_url: `data:${m[1]};base64,${m[2]}` };
+}
+
+/** Validate the whole body before anything is counted or sent. Returns { error, status } or the clean fields. */
+function validateGenerateBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'JSON object body required' };
+  if (body.hasPeople || body.has_people) {
+    return { error: 'Please use a room photo without people or faces for the AI preview.' };
   }
-  const key = process.env.FAL_KEY || process.env.FAL_API_KEY || process.env.REMODEL_AI_API_KEY;
-  return key && String(key).trim() ? String(key).trim() : '';
+  const projectId = Number(body.projectId ?? body.project_id);
+  if (!Number.isInteger(projectId) || projectId <= 0) return { error: 'projectId is required' };
+  const roomIn = body.room ?? body.roomType ?? 'kitchen';
+  if (typeof roomIn !== 'string') return { error: 'room must be a string' };
+  const room = roomIn.trim().toLowerCase();
+  if (!ROOMS.has(room)) return { error: 'Unknown room type' };
+  const fIn = body.finishes ?? {};
+  if (!fIn || typeof fIn !== 'object' || Array.isArray(fIn)) return { error: 'finishes must be an object' };
+  for (const k of Object.keys(fIn)) if (!FINISH_KEYS.includes(k)) return { error: 'Unknown finish field' };
+  const finishes = {};
+  for (const k of FINISH_KEYS) {
+    const v = fIn[k];
+    if (v == null || v === '') { finishes[k] = null; continue; }
+    if (typeof v !== 'string') return { error: `finishes.${k} must be a string` };
+    const t = v.trim();
+    if (t.length > MAX_FINISH_CHARS || !FINISH_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
+    finishes[k] = t;
+  }
+  const img = validateImage(body.imageUrl ?? body.image_url);
+  if (img.error) return img;
+  const prompt = buildPrompt(room, finishes);
+  if (prompt.length > MAX_PROMPT_CHARS) return { error: 'Prompt too long' };
+  return { projectId, room, finishes, image_url: img.image_url, prompt };
 }
 
 function buildPrompt(room, finishes) {
@@ -49,18 +97,6 @@ function buildPrompt(room, finishes) {
   ].join('\n');
 }
 
-function resolveImageUrl(imageUrl, req) {
-  const raw = String(imageUrl || '').trim();
-  if (!raw) return '';
-  if (/^https?:\/\//i.test(raw) || /^data:/i.test(raw)) return raw;
-  if (raw.startsWith('/')) {
-    const base = (process.env.CLIENT_URL || '').replace(/\/$/, '')
-      || `${req.protocol}://${req.get('host')}`;
-    return `${base}${raw}`;
-  }
-  return raw;
-}
-
 function sessionKeyFromReq(req) {
   const hdr = (req.headers['x-remodel-session'] || '').toString().trim();
   if (hdr && hdr.length <= 128) return `hdr:${hdr}`;
@@ -73,8 +109,7 @@ function sessionKeyFromReq(req) {
       return `tok:${crypto.createHash('sha256').update(token).digest('hex').slice(0, 32)}`;
     }
   }
-  const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'anon').toString().split(',')[0].trim();
-  return `ip:${ip}`;
+  return `ip:${req.remodelIp || req.socket?.remoteAddress || 'anon'}`;
 }
 
 function getSessionBudget(key) {
@@ -153,7 +188,7 @@ function createRemodelGenerateHandler(deps) {
       const client = await deps.getClientFromToken(req);
       const auth = (req.headers.authorization || '').toString();
       const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-      const isOwner = Boolean(token && deps.ownerTokens.has(token));
+      const isOwner = Boolean(token && deps.ownerTokens && deps.ownerTokens.has(token));
       if (!client && !isOwner) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
@@ -165,27 +200,9 @@ function createRemodelGenerateHandler(deps) {
         });
       }
 
-      const projectId = Number(req.body?.projectId ?? req.body?.project_id);
-      const room = String(req.body?.room || req.body?.roomType || 'kitchen').toLowerCase();
-      const finishes = req.body?.finishes || {};
-      const imageUrlIn = req.body?.imageUrl || req.body?.image_url;
-      const hasPeople = Boolean(req.body?.hasPeople || req.body?.has_people);
-
-      if (hasPeople) {
-        return res.status(400).json({
-          error: 'Please use a room photo without people or faces for the AI preview.',
-          honesty: HONESTY,
-        });
-      }
-
-      if (!Number.isFinite(projectId) || projectId <= 0) {
-        return res.status(400).json({ error: 'projectId is required', honesty: HONESTY });
-      }
-
-      const image_url = resolveImageUrl(imageUrlIn, req);
-      if (!image_url) {
-        return res.status(400).json({ error: 'imageUrl is required (https URL, data URI, or /uploads/… path)', honesty: HONESTY });
-      }
+      const v = req.remodelValid || validateGenerateBody(req.body);
+      if (v.error) return res.status(v.status || 400).json({ error: v.error, honesty: HONESTY });
+      const { projectId, prompt, image_url } = v;
 
       const sessionKey = sessionKeyFromReq(req);
       const budget = getSessionBudget(sessionKey);
@@ -199,7 +216,6 @@ function createRemodelGenerateHandler(deps) {
         });
       }
 
-      const prompt = buildPrompt(room, finishes);
       const data = await callFalKontext({ prompt, image_url }, { fetchImpl: deps.fetchImpl });
       const afterImageUrl = data?.images?.[0]?.url;
       if (!afterImageUrl) {
@@ -241,7 +257,9 @@ module.exports = {
   HONESTY,
   getFalKey,
   buildPrompt,
-  resolveImageUrl,
+  validateGenerateBody,
+  validateImage,
+  MAX_PROMPT_CHARS,
   callFalKontext,
   createRemodelGenerateHandler,
   sessionSpend,
