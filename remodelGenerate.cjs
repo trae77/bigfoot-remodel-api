@@ -53,9 +53,34 @@ function imageLongSide(dataUri) {
     return w && h ? Math.max(w, h) : null;
   } catch { return null; }
 }
+/** { w, h } from the same header parse, or null. Used to size heuristic masks. */
+function imageSize(dataUri) {
+  try {
+    const m = /^data:image\/(jpeg|png|webp);base64,(.*)$/.exec(dataUri); if (!m) return null;
+    const b = Buffer.from(m[2].slice(0, 200000), 'base64');
+    if (m[1] === 'png' && b.length >= 24) return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    if (m[1] === 'webp' && b.length >= 30 && b.toString('latin1', 12, 16) === 'VP8X') return { w: 1 + b.readUIntLE(24, 3), h: 1 + b.readUIntLE(27, 3) };
+    if (m[1] === 'jpeg') {
+      for (let i = 2; i + 9 < b.length;) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const mk = b[i + 1];
+        if (mk >= 0xc0 && mk <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(mk)) return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+        i += 2 + b.readUInt16BE(i + 2);
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+/**
+ * REMODEL_REGIONS: per-region passes (floor, cabinets, counters) with furniture exclusions and floor guards.
+ * Default OFF so deploying this changes nothing until flipped. On for 1/true/on/yes; anything else OFF.
+ */
+function regionsOn() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_REGIONS || '').trim().toLowerCase()); }
 const FAL_MODEL = FAL_MODELS.pro.id;
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
 const store = require('./imageStore.cjs');
+const regions = require('./regionTargeting.cjs');
+const engines = require('./engines.cjs');
 const catalog = require('./productCatalog.cjs');
 const COST_PER_STILL_USD = 0.04; // pro; use falModel().usd for the live cost
 const MAX_GENERATES_PER_SESSION = 5;
@@ -294,6 +319,12 @@ function floorOnlyPrompt(floor, fromCatalog) {
 /** The fal calls one generate will make: [{ prompt, guidance_scale? }]. Two only when REMODEL_TWO_PASS=1, a floor change is asked for, and something else changes too. */
 function planCalls(v) {
   const f = v.finishes || {};
+  if (regionsOn()) {
+    const fromCat = v.catalogSlots instanceof Set ? v.catalogSlots : new Set();
+    const phrase = (r, x) => (r === 'floor' ? stripNegations(fromCat.has('floor') ? String(x).trim() : floorPhrase(x)) : r === 'cabinets' ? cabinetPhrase(x, fromCat.has('cabinets')) : String(x));
+    const plan = regions.planRegions(v.room, f, phrase);
+    if (plan.length) return plan.map((c) => ({ region: c.region, prompt: c.prompt, negative: c.negative, ...(c.region === 'floor' ? { guidance_scale: floorGuidance() } : {}) }));
+  }
   const hasFloor = !(f.floor == null || f.floor === '');
   if (!twoPassOn() || !hasFloor) return [{ prompt: v.prompt }];
   const fromCat = v.catalogSlots instanceof Set && v.catalogSlots.has('floor');
@@ -354,6 +385,8 @@ function resolvedConfig() {
   const h = falRunHeaders('x');
   return {
     twoPass: twoPassOn(),
+    regions: regionsOn(),
+    engine: engines.engineId(),
     model: falModel().id,
     guidance: falGuidance(),
     floorGuidance: floorGuidance(),
@@ -421,6 +454,46 @@ async function callFalKontext(input, opts = {}) {
   return data;
 }
 
+/** Kontext has no negative-prompt field, so negatives are appended as plain 'Avoid:' words. Mask ignored. */
+function withNegatives(prompt, negative) {
+  return Array.isArray(negative) && negative.length ? `${prompt}\nAvoid: ${negative.join(', ')}.` : prompt;
+}
+engines.register('kontext', {
+  usesMask: false,
+  available: () => true,
+  model: () => falModel().id,
+  usdPerCall: () => falModel().usd,
+  run: (c, imageUrl, o) => callFalKontext({ prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, o),
+});
+// fal FLUX.1 [pro] Fill: prompt + mask inpaint. Price is NOT hard-coded (never invent prices): the engine is
+// only available when REMODEL_FILL_USD is set to a positive number from fal's model page; otherwise kontext is used.
+const FILL_MODEL = 'fal-ai/flux-pro/v1/fill';
+function fillUsd() { const n = Number((process.env.REMODEL_FILL_USD || '').trim()); return Number.isFinite(n) && n > 0 && n < 1 ? n : null; }
+engines.register('fill', {
+  usesMask: true,
+  available: () => fillUsd() != null,
+  model: () => FILL_MODEL,
+  usdPerCall: () => fillUsd(),
+  run: (c, imageUrl, o) => callFalJson(FILL_MODEL, { prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, mask_url: c.mask_url, num_images: 1, output_format: 'jpeg', safety_tolerance: '2' }, o),
+});
+
+/** Generic fal.run POST with the same retention headers and error shape as callFalKontext. */
+async function callFalJson(model, body, opts = {}) {
+  const key = getFalKey();
+  if (!key) { const err = new Error('FAL_KEY is not configured'); err.code = 'MISSING_KEY'; throw err; }
+  const fetchImpl = opts.fetchImpl || globalThis.fetch;
+  const headers = falRunHeaders(key);
+  const res = await fetchImpl(`https://fal.run/${model}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const text = await res.text();
+  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = {}; }
+  if (!res.ok) { const err = new Error(`fal upstream ${res.status}`); err.code = 'FAL_UPSTREAM'; err.falStatus = res.status; throw err; }
+  const rid = res.headers && res.headers.get ? res.headers.get('x-fal-request-id') : null;
+  console.info('fal_run_retention', JSON.stringify(falRetentionLog(headers, rid)));
+  if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
+  if (data && typeof data === 'object') Object.defineProperty(data, '__falStoreIo', { value: headers['X-Fal-Store-IO'] ?? null, enumerable: false });
+  return data;
+}
+
 /**
  * Express handler factory.
  * @param {{ getClientFromToken: Function, ownerTokens: Set, fetchImpl?: typeof fetch }} deps
@@ -466,11 +539,15 @@ function createRemodelGenerateHandler(deps) {
       let cleaned = false;
       const runCleanup = () => { if (!cleaned) { cleaned = true; cleanup(); } };
       try {
+      const engine = engines.getEngine();
+      const size = engine.usesMask ? imageSize(image_url) : null;
+      if (engine.usesMask && !size) return res.status(400).json({ error: 'Could not read image size', honesty: HONESTY });
       for (const c of calls) {
-        const d = await callFalKontext({ prompt: c.prompt, image_url: input, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, { fetchImpl: deps.fetchImpl });
+        const call = { ...c, ...(size && c.region ? { mask_url: regions.heuristicMask(c.region, size.w, size.h) } : {}) };
+        const d = await engine.run(call, input, { fetchImpl: deps.fetchImpl });
         // fal has billed once it returns: charge the session now, even if a later step fails.
         budget.count += 1;
-        budget.spendUsd += falModel().usd;
+        budget.spendUsd += engine.usdPerCall();
         budget.updatedAt = Date.now();
         sessionSpend.set(sessionKey, budget);
         results.push(d);
@@ -483,7 +560,7 @@ function createRemodelGenerateHandler(deps) {
         runCleanup();
         throw e;
       }
-      if (calls.length > 1) console.info('remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
+      if (calls.length > 1) console.info(calls[0].region ? 'remodel_region_passes' : 'remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
       const data = results[results.length - 1];
       const falUrl = results.length === calls.length ? data?.images?.[0]?.url : null;
       function cleanup() { setImmediate(() => {
@@ -521,7 +598,7 @@ function createRemodelGenerateHandler(deps) {
         afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
-        provider: falModel().id,
+        provider: engines.getEngine().model(),
         seed: data.seed ?? null,
         projectId,
       });
@@ -539,6 +616,10 @@ function createRemodelGenerateHandler(deps) {
 }
 
 module.exports = {
+  regionsOn,
+  imageSize,
+  withNegatives,
+  FILL_MODEL,
   FAL_MODEL,
   FAL_MODELS,
   falModel,
