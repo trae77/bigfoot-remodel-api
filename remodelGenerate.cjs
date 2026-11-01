@@ -209,9 +209,8 @@ function createRemodelGenerateHandler(deps) {
       const remaining = remainingGenerates(budget);
       if (remaining <= 0) {
         return res.status(429).json({
-          error: 'Session generate cap reached (max 5 stills or ~$0.25). Start a new browser session or try later.',
+          error: 'Session preview limit reached. Start a new browser session or try later.',
           remainingSessionGenerates: 0,
-          estimatedCostUsd: COST_PER_STILL_USD,
           honesty: HONESTY,
         });
       }
@@ -229,7 +228,6 @@ function createRemodelGenerateHandler(deps) {
 
       return res.status(200).json({
         afterImageUrl,
-        estimatedCostUsd: COST_PER_STILL_USD,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
         provider: FAL_MODEL,

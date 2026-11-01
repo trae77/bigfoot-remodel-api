@@ -22,6 +22,13 @@ function createApp(opts = {}) {
   app.disable('x-powered-by');
   app.set('trust proxy', false);
 
+  // Baseline security headers on every response.
+  app.use((_req, res, next) => {
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.set('X-Content-Type-Options', 'nosniff');
+    return next();
+  });
+
   // CORS on every /api route (health included): echo only an allowlisted Origin, never credentials.
   app.use('/api', (req, res, next) => {
     const cfg = sec.getConfig();
@@ -136,6 +143,9 @@ function createApp(opts = {}) {
       fetchImpl: opts.fetchImpl,
     })
   );
+
+  // JSON 404 for unknown routes (no Express HTML page).
+  app.use((_req, res) => res.status(404).json({ error: 'Not found', honesty: HONESTY }));
 
   app.use((err, _req, res, _next) => {
     if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large', honesty: HONESTY });
