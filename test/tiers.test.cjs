@@ -276,3 +276,13 @@ test('SKU strip: only codes of 5+ characters with letters and digits, and keep t
   assert.equal(cleanDisplayName('Widget AB12C'), 'Widget');
   assert.equal(cleanDisplayName('Hampton Bay recessed-panel KB36-UF'), 'Hampton Bay recessed-panel');
 });
+
+test('PUNCH P3-3: brand-only names get the category word', () => {
+  const { cleanDisplayName } = require('../productCatalog.cjs');
+  assert.equal(cleanDisplayName('Kohler K-1234', 'vanity'), 'Kohler vanity');
+  assert.equal(cleanDisplayName('Kohler', 'faucet'), 'Kohler faucet');
+  assert.equal(cleanDisplayName('Sink I96711LP3', 'sink'), 'Sink', 'already names the category');
+  assert.equal(cleanDisplayName('Kohler Artifacts', 'vanity'), 'Kohler Artifacts', 'two words left: unchanged');
+  assert.equal(cleanDisplayName('Kohler', 'constructor'), 'Kohler', 'unknown category: unchanged');
+  assert.equal(cleanDisplayName('Kohler'), 'Kohler');
+});

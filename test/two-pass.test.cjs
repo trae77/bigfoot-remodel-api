@@ -20,13 +20,13 @@ function stubFal(runs, { failPass = 0 } = {}) {
     throw new Error('unexpected ' + url);
   };
 }
-async function boot(fetchImpl, env = {}) {
+async function boot(fetchImpl, env = {}, appOpts = {}) {
   Object.assign(process.env, { REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', FAL_KEY: 'fake-fal', FAL_STORE_IO: '0', REMODEL_TWO_PASS: '1' }, env);
   delete process.env.CORS_ORIGINS; delete process.env.REMODEL_FLOOR_GUIDANCE;
   if (!('REMODEL_FAL_MODEL' in env)) delete process.env.REMODEL_FAL_MODEL;
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
   require('../remodelGenerate.cjs').sessionSpend.clear();
-  const server = http.createServer(require('../remodelApi.cjs').createApp({ fetchImpl }));
+  const server = http.createServer(require('../remodelApi.cjs').createApp({ fetchImpl, ...appOpts }));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
 }
@@ -36,7 +36,7 @@ async function gen(base, finishes = FINISHES, img = PNG(1600, 900), token) {
     body: JSON.stringify({ projectId: 1, room: 'kitchen', image_url: img, finishes }) });
   return { status: r.status, json: await r.json(), token: t };
 }
-test.afterEach(() => { delete process.env.REMODEL_TWO_PASS; delete process.env.REMODEL_FAL_MODEL; });
+test.afterEach(() => { for (const k of ['REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY']) delete process.env[k]; });
 
 test('two calls: floor-only at 5.0 first, then the rest on pass 1 output; headers on both', async () => {
   const runs = []; const s = await boot(stubFal(runs));
@@ -97,4 +97,47 @@ test('inputs under 1024px on the long side log a warning (no upscaling)', () => 
   const jpg = Buffer.from([0xff,0xd8, 0xff,0xe0,0,4,0,0, 0xff,0xc0,0,17,8, 0x01,0x3b, 0x02,0x30, 3]);
   assert.equal(imageLongSide('data:image/jpeg;base64,' + jpg.toString('base64')), 560);
   assert.equal(imageLongSide('data:image/jpeg;base64,AAAA'), null);
+});
+
+test('PUNCH P2: per-IP daily cap counts fal calls (two-pass = 2), checked before any call', async () => {
+  const runs = []; const genCounter = require('../security.cjs').createDailyCounter();
+  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '3', REMODEL_GLOBAL_DAILY: '100' }, { genCounter });
+  try {
+    assert.equal((await gen(s.base)).status, 200); assert.equal(runs.length, 2);
+    assert.equal(genCounter.get('global'), 2);
+    const b = await gen(s.base);
+    assert.equal(b.status, 429, JSON.stringify(b.json)); assert.equal(runs.length, 2, 'no pass 1 when 2 slots do not fit');
+    assert.equal(genCounter.get('global'), 2, 'a refused request reserves nothing');
+    assert.equal((await gen(s.base, { cabinets: 'white shaker' })).status, 200, 'a 1-call generate still fits the last slot');
+    assert.equal(runs.length, 3);
+  } finally { await s.close(); }
+});
+
+test('PUNCH P2: global daily cap counts fal calls too', async () => {
+  const runs = []; const genCounter = require('../security.cjs').createDailyCounter();
+  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '100', REMODEL_GLOBAL_DAILY: '1' }, { genCounter });
+  try {
+    assert.equal((await gen(s.base)).status, 429); assert.equal(runs.length, 0); assert.equal(genCounter.get('global'), 0);
+  } finally { await s.close(); }
+});
+
+test('PUNCH P3-1: REMODEL_FAL_MODEL=constructor/toString/__proto__ falls back to pro', () => {
+  const g = require('../remodelGenerate.cjs');
+  for (const k of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    process.env.REMODEL_FAL_MODEL = k; assert.equal(g.falModel().id, 'fal-ai/flux-pro/kontext', k); assert.equal(g.falModel().usd, 0.04);
+  }
+});
+
+test('PUNCH P3-2: pass 2 throws -> pass 1 id still gets its retention and skip logs', async () => {
+  const runs = []; const logs = []; const orig = console.info;
+  console.info = (...a) => { logs.push(a.join(' ')); };
+  const s = await boot(stubFal(runs, { failPass: 2 }));
+  try {
+    const g = await gen(s.base);
+    assert.ok(g.status >= 500); assert.equal(runs.length, 2);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(logs.some((l) => l.startsWith('fal_run_retention') && l.includes('req-pass-1')), logs.join('\n'));
+    assert.ok(logs.some((l) => l.startsWith('fal_payload_delete_skipped') && l.includes('req-pass-1')), logs.join('\n'));
+    assert.ok(!logs.join('\n').includes('fal.media'), 'no URL in logs');
+  } finally { console.info = orig; await s.close(); }
 });

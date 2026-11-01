@@ -7,7 +7,10 @@
 // Model and $/image from fal's model pages (fal.ai/models/fal-ai/flux-pro/kontext[/max]/llms.txt, 2026-10-31).
 const FAL_MODELS = { pro: { id: 'fal-ai/flux-pro/kontext', usd: 0.04 }, max: { id: 'fal-ai/flux-pro/kontext/max', usd: 0.08 } };
 /** REMODEL_FAL_MODEL=pro|max (default pro). Anything else falls back to pro. */
-function falModel() { return FAL_MODELS[(process.env.REMODEL_FAL_MODEL || '').trim().toLowerCase()] || FAL_MODELS.pro; }
+function falModel() {
+  const k = (process.env.REMODEL_FAL_MODEL || '').trim().toLowerCase();
+  return Object.hasOwn(FAL_MODELS, k) ? FAL_MODELS[k] : FAL_MODELS.pro;
+}
 /** REMODEL_GUIDANCE: fal range 1-20, default 3.5. Out of range or not a number falls back to 3.5. */
 function falGuidance() {
   const raw = (process.env.REMODEL_GUIDANCE || '').trim(); const g = Number(raw);
@@ -371,6 +374,9 @@ function createRemodelGenerateHandler(deps) {
       const fetchImpl = deps.fetchImpl || globalThis.fetch;
       const results = [];
       let input = image_url;
+      let cleaned = false;
+      const runCleanup = () => { if (!cleaned) { cleaned = true; cleanup(); } };
+      try {
       for (const c of calls) {
         const d = await callFalKontext({ prompt: c.prompt, image_url: input, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, { fetchImpl: deps.fetchImpl });
         // fal has billed once it returns: charge the session now, even if a later step fails.
@@ -383,10 +389,15 @@ function createRemodelGenerateHandler(deps) {
         if (!u) break;
         input = u;
       }
+      } catch (e) {
+        // A later pass threw: still log the skip/delete for every call fal already ran (pass 1's id stays in the audit log).
+        runCleanup();
+        throw e;
+      }
       if (calls.length > 1) console.info('remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
       const data = results[results.length - 1];
       const falUrl = results.length === calls.length ? data?.images?.[0]?.url : null;
-      const cleanup = () => setImmediate(() => {
+      function cleanup() { setImmediate(() => {
         for (const d of results) {
           // Server-side only, for QA delete checks: fal request id and counts. No URL, no key. Never sent to the browser.
           const rid = d.__falRequestId; const id = rid || null; const key = getFalKey();
@@ -398,9 +409,9 @@ function createRemodelGenerateHandler(deps) {
             if (typeof deps.onFalDeleteFail === 'function') Promise.resolve().then(() => deps.onFalDeleteFail(del)).catch(() => {});
           }).catch(() => console.error('ALERT fal_payload_delete_failed', JSON.stringify({ id, reason: 'exception' })));
         }
-      });
+      }); }
       if (!falUrl) {
-        cleanup();
+        runCleanup();
         return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
       }
       // Privacy: copy the render into private in-process storage, then delete it from fal.
@@ -410,7 +421,7 @@ function createRemodelGenerateHandler(deps) {
         stored = await store.fetchFalImage(falUrl, fetchImpl);
       } finally {
         // Never block the client on fal's delete: run it after the response is sent (capped at 3 s in imageStore).
-        cleanup();
+        runCleanup();
       }
       const id = deps.imageStore.put(stored.buf, stored.type);
       const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
