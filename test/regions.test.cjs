@@ -21,7 +21,7 @@ function stubFal(runs, { failPass = 0 } = {}) {
     throw new Error('unexpected outbound ' + url);
   };
 }
-const ENV_KEYS = ['REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_ENGINE_TIMEOUT_MS', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_REGIONS', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_TWO_PASS', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_FAL_MODEL'];
+const ENV_KEYS = ['REMODEL_REGION_MODE', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_ENGINE_TIMEOUT_MS', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_REGIONS', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_TWO_PASS', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_FAL_MODEL'];
 async function boot(fetchImpl, env = {}) {
   for (const k of ENV_KEYS) delete process.env[k];
   Object.assign(process.env, { REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', FAL_KEY: 'fake-fal', REMODEL_REGIONS: '1' }, env);
@@ -334,4 +334,31 @@ test('failover respects the per-render ceiling: retry that would exceed it is no
 test('failover on timeout: hung kontext call -> qwen retry after REMODEL_ENGINE_TIMEOUT_MS', async () => {
   const runs = []; const s = await boot(stubFal2(runs, { failUrl: 'kontext', hang: true }), { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.05', REMODEL_ENGINE_TIMEOUT_MS: '5000' });
   try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 200); assert.equal(runs.length, 2); assert.match(runs[1].url, /qwen/); } finally { await s.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_ENGINE_TIMEOUT_MS']) delete process.env[k]; }
+});
+
+test('cabinet-only mode: one cabinets call; floor, counters, walls untouched; needs a cabinet finish', async () => {
+  const runs = []; const s = await boot(stubFal2(runs), { REMODEL_REGION_MODE: 'cabinets-only' });
+  try {
+    const r = await gen(s.base);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(runs.length, 1);
+    assert.match(runs[0].body.prompt, /Change only the cabinet doors/);
+    assert.doesNotMatch(runs[0].body.prompt, /oak|quartz|soft gray/i);
+    assert.match(runs[0].body.prompt, /Keep floor, countertops/);
+    const r2 = await gen(s.base, { floor: 'oak', counters: 'granite' });
+    assert.equal(r2.status, 400); assert.equal(runs.length, 1);
+  } finally { await s.close(); delete process.env.REMODEL_REGION_MODE; }
+});
+
+test('cabinet-only mode is ignored when REMODEL_REGIONS is off', () => {
+  process.env.REMODEL_REGION_MODE = 'cabinets-only'; process.env.REMODEL_REGIONS = '0';
+  delete require.cache[require.resolve('../remodelGenerate.cjs')];
+  assert.equal(require('../remodelGenerate.cjs').cabinetsOnly(), false);
+});
+
+test('legacy Kontext prompts also keep appliances/objects outside the target regions', () => {
+  delete process.env.REMODEL_REGIONS; delete require.cache[require.resolve('../remodelGenerate.cjs')];
+  const g = require('../remodelGenerate.cjs');
+  // buildPrompt (single-call/pass 2) is at the 1200-char cap for full tier combos, so it keeps its existing keep-list.
+  assert.match(g.floorOnlyPrompt('oak'), /Keep all appliances and objects not in the target regions unchanged/);
 });

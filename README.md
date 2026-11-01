@@ -30,7 +30,7 @@ an anti-stripe guard. Engines (`engines.cjs`): `kontext` (default, prompt-scoped
 (fal FLUX pro fill with a free heuristic band mask; only enabled when `REMODEL_FILL_USD` is set from fal's price page).
 Every call is reserved in the D1 caps before the first one goes out. Max 3 calls per render: $0.12 on Kontext pro, $0.24 on Kontext max ($0.08/call), and at most $0.48 on fill (REMODEL_FILL_USD is hard-capped at $0.16/call; above that fill is refused with 503). Regions OFF always uses Kontext. A monthly dollar cap (REMODEL_MONTHLY_USD_CAP, default $10) is reserved in D1 per call before any fal call.
 
-### Declutter pre-pass (REMODEL_DECLUTTER, default OFF)
+### Declutter pre-pass (REMODEL_DECLUTTER, default OFF; minimal stub, lowered scores in AI Bot's A/B, keep OFF)
 One extra call first: removes loose items on the counters and free-standing furniture in the middle of the room (dining table, chairs, stools, rugs).
 Walls, windows, cabinets and appliances stay. The remodel passes then run on the cleared image. The call is reserved up front in the D1 count caps and the monthly dollar cap.
 
@@ -49,5 +49,9 @@ Note: the per-token allowance (REMODEL_REQUESTS_PER_TOKEN, default 3) must be at
 | all OFF (two-pass) | 2 | 0.08 | 0.16 | n/a |
 | DECLUTTER | 3 | 0.12 | 0.24 | n/a |
 | REGIONS | 3 | 0.12 | 0.24 | 0.48 |
+| REGIONS + REMODEL_REGION_MODE=cabinets-only | 1 | 0.04 | 0.08 | 0.16 |
 | REGIONS + DECLUTTER | 4 | 0.16 | 0.32 | 0.64, refused at the 0.50 ceiling |
 | + FAILOVER (qwen at 0.16) | up to 2x calls | capped at the 0.50 ceiling | capped at 0.50 | fill has no failover |
+
+### Cabinet-only mode (REMODEL_REGION_MODE=cabinets-only, needs REMODEL_REGIONS on)
+Makes one call that edits only the cabinets. The floor, counters, walls and backsplash stay untouched. A request without a cabinet finish gets a 400 with no call.

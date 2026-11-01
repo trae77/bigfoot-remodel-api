@@ -173,7 +173,7 @@ test('startup config line: resolved values, no secrets or URLs', () => {
   delete process.env.REMODEL_TWO_PASS; delete process.env.FAL_STORE_IO; delete process.env.FAL_MEDIA_EXPIRATION_SEC;
   const { resolvedConfig } = require('../remodelGenerate.cjs');
   const c = resolvedConfig();
-  assert.deepEqual(c, { twoPass: true, regions: false, declutter: false, failover: false, engine: 'kontext', model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
+  assert.deepEqual(c, { twoPass: true, regions: false, cabinetsOnly: false, declutter: false, failover: false, engine: 'kontext', model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
   const line = JSON.stringify(c);
   for (const bad of ['SECRET', 'Tq7vR2', 'example.test', 'Key ']) assert.ok(!line.includes(bad), bad);
   process.env.REMODEL_TWO_PASS = '0'; delete process.env.PUBLIC_API_ORIGIN; process.env.FAL_MEDIA_EXPIRATION_SEC = '0';

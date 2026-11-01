@@ -83,6 +83,8 @@ function failoverFlag() { return ['1', 'true', 'on', 'yes'].includes((process.en
 function engineTimeoutMs() { const n = Number((process.env.REMODEL_ENGINE_TIMEOUT_MS || '').trim()); return Number.isInteger(n) && n >= 5000 && n <= 120000 ? n : 60000; }
 /** Per-render dollar ceiling: no call starts if it would push this render over. Default 0.50 USD, max 1 USD. */
 function renderMaxUsd() { const n = Number((process.env.REMODEL_RENDER_MAX_USD || '').trim()); return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.5; }
+/** REMODEL_REGION_MODE=cabinets-only (regions ON only): edit just the cabinets; floor, counters, walls, backsplash untouched. */
+function cabinetsOnly() { return regionsOn() && (process.env.REMODEL_REGION_MODE || '').trim().toLowerCase() === 'cabinets-only'; }
 function regionsOn() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_REGIONS || '').trim().toLowerCase()); }
 const FAL_MODEL = FAL_MODELS.pro.id;
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
@@ -208,6 +210,7 @@ function validateGenerateBody(body) {
   const prompt = buildPrompt(room, finishes, { catalogSlots });
   // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
   const sent = planCalls({ room, finishes, catalogSlots, prompt });
+  if (cabinetsOnly() && !sent.length) return { error: 'Pick a cabinet finish for the cabinet-only preview' };
   if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
   const longSide = imageLongSide(img.image_url);
   if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
@@ -320,7 +323,7 @@ function absoluteImageUrl(path) {
 function floorOnlyPrompt(floor, fromCatalog) {
   return [
     `Change only the floor. ${floorInstruction(floor, fromCatalog).replace(/^replace/, 'Replace')}.`,
-    'Leave the cabinets, counters, walls, appliances, windows and camera angle unchanged.',
+    'Leave the cabinets, counters, walls, appliances, windows and camera angle unchanged. Keep all appliances and objects not in the target regions unchanged.',
   ].join('\n');
 }
 
@@ -330,7 +333,9 @@ function planCalls(v) {
   if (regionsOn()) {
     const fromCat = v.catalogSlots instanceof Set ? v.catalogSlots : new Set();
     const phrase = (r, x) => (r === 'floor' ? stripNegations(fromCat.has('floor') ? String(x).trim() : floorPhrase(x)) : r === 'cabinets' ? cabinetPhrase(x, fromCat.has('cabinets')) : String(x));
-    const plan = regions.planRegions(v.room, f, phrase);
+    const src = cabinetsOnly() ? { cabinets: f.cabinets } : f;
+    if (cabinetsOnly() && (f.cabinets == null || f.cabinets === '')) return [];
+    const plan = regions.planRegions(v.room, src, phrase);
     if (plan.length && declutterOn()) plan.unshift(regions.declutterCall(v.room));
     if (plan.length) return plan.map((c) => ({ region: c.region, prompt: c.prompt, negative: c.negative, ...(c.region === 'floor' ? { guidance_scale: floorGuidance() } : {}) }));
   }
@@ -399,6 +404,7 @@ function resolvedConfig() {
   return {
     twoPass: twoPassOn(),
     regions: regionsOn(),
+    cabinetsOnly: cabinetsOnly(),
     declutter: declutterOn(),
     failover: Boolean(failoverEngine(engines.ENGINES.kontext)),
     engine: selectEngine() ? selectEngine().id : 'unavailable',
@@ -692,6 +698,7 @@ function createRemodelGenerateHandler(deps) {
 }
 
 module.exports = {
+  cabinetsOnly,
   declutterOn,
   failoverEngine,
   qwenUsd,
