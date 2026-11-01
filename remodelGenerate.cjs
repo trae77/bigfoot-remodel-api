@@ -88,12 +88,16 @@ function validateGenerateBody(body) {
   return { projectId, room, finishes, image_url: img.image_url, prompt };
 }
 
+// Naming a pattern, even as "no parquet", pulls Kontext toward it, so unwanted patterns are never named.
+const NEGATED_PATTERN_RE = /[,;]?\s*\b(?:no|not|without)\s+(?:parquet|herringbone|chevron|basket-?weave)(?:\s*(?:,|or|and)\s*(?:parquet|herringbone|chevron|basket-?weave))*\b/gi;
 const PLANK_TAIL = 'hardwood flooring in long straight parallel planks';
 const WOOD_RE = /\b(oak|walnut|maple|hickory|cherry|ash|birch|pine|teak|acacia|hardwood|wood)\b/i;
 const NOT_WOOD_RE = /\b(tile|vinyl|lvp|laminate|carpet|concrete|stone|marble|porcelain|ceramic|epoxy)\b/i;
 /** Wood floor choices become explicit wide-plank wording so the model doesn't drift to parquet or herringbone. */
 function floorPhrase(v) {
-  const raw = String(v).trim();
+  // Strip "no parquet", "without herringbone" etc. first, so a negated pattern is never read as the choice.
+  const raw = String(v).replace(NEGATED_PATTERN_RE, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw) return 'a new plain floor';
   if ((!WOOD_RE.test(raw) && !/\b(herringbone|parquet|basket-?weave)\b/i.test(raw)) || NOT_WOOD_RE.test(raw)) return raw;
   const pat = /\bherringbone\b/i.test(raw) ? 'herringbone' : /\b(parquet|basket-?weave)\b/i.test(raw) ? 'parquet' : null;
   if (pat) {
@@ -111,8 +115,6 @@ function floorPhrase(v) {
  * Every chosen floor, legacy option or catalog product, is phrased as an explicit full replacement.
  */
 const PATTERN_RE = /\b(herringbone|parquet|basket-?weave|chevron)\b/i;
-// Naming a pattern, even as "no parquet", pulls Kontext toward it, so unwanted patterns are never named.
-const NEGATED_PATTERN_RE = /[,;]?\s*\b(?:no|not|without)\s+(?:parquet|herringbone|chevron|basket-?weave)(?:\s*(?:,|or|and)\s*(?:parquet|herringbone|chevron|basket-?weave))*\b/gi;
 function floorInstruction(v, fromCatalog) {
   const target = (fromCatalog ? String(v).trim() : floorPhrase(v)).replace(NEGATED_PATTERN_RE, '').replace(/\s+/g, ' ').trim();
   const patterned = PATTERN_RE.test(target);

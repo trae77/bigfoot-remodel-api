@@ -43,3 +43,13 @@ test('catalog text that says "no parquet or herringbone" is cleaned before it re
   assert.ok(!/parquet|herringbone/i.test(pr), pr);
   assert.match(pr, /Oak strips, matte; laid as long straight parallel planks/);
 });
+
+test('floorPhrase strips "no ..." negations before it looks for a pattern word', () => {
+  assert.equal(floorPhrase('no parquet please oak'), `wide-plank please oak ${TAIL}`);
+  assert.ok(!/pattern|parquet/.test(floorPhrase('no parquet please oak')));
+  assert.equal(floorPhrase('Oak without herringbone'), `wide-plank oak ${TAIL}`);
+  assert.equal(floorPhrase('Walnut, no parquet or herringbone'), `wide-plank walnut ${TAIL}`);
+  assert.equal(floorPhrase('White oak herringbone'), 'white oak hardwood flooring in a herringbone pattern');
+  assert.equal(floorPhrase('no parquet'), 'a new plain floor');
+  assert.ok(!/parquet|herringbone/i.test(buildPrompt('kitchen', { floor: 'no parquet please oak' })));
+});

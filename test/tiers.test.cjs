@@ -239,3 +239,16 @@ test('QA P3: display names never end in a SKU or model number', () => {
   for (const sku of ['I96711LP3', 'KB36-UF', 'TSTB-TS404-LR-25X96']) assert.ok(!names.includes(sku), sku);
   for (const m of names.matchAll(/"name":"([^"]+)"/g)) assert.ok(!/\s(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(m[1]), m[1]);
 });
+
+test('SKU strip: only codes of 5+ characters with letters and digits, and never below 2 words', () => {
+  fresh();
+  const { cleanDisplayName } = require('../productCatalog.cjs');
+  assert.equal(cleanDisplayName('LG 4K'), 'LG 4K');
+  assert.equal(cleanDisplayName('Delta Classic 500'), 'Delta Classic 500');
+  assert.equal(cleanDisplayName('Kohler shower K12'), 'Kohler shower K12', 'too short to be a SKU');
+  assert.equal(cleanDisplayName('Moen faucet 87039'), 'Moen faucet 87039', 'digits only is not a SKU');
+  assert.equal(cleanDisplayName('Samsung TV QN65Q80C'), 'Samsung TV');
+  assert.equal(cleanDisplayName('Faucet I96711LP3'), 'Faucet I96711LP3', 'would leave 1 word, keep the original');
+  assert.equal(cleanDisplayName('Widget AB12C'), 'Widget AB12C');
+  assert.equal(cleanDisplayName('Hampton Bay recessed-panel KB36-UF'), 'Hampton Bay recessed-panel');
+});

@@ -10,14 +10,16 @@ const ID_RE = /^[a-z_]{1,40}\.[a-z_]{1,20}$/;
 const PRICE_RE = /\$\s?\d|\b\d+(?:\.\d+)?\s?(?:usd|dollars?)\b/i;
 let cached = null;
 
-// A trailing model/SKU token: has a digit, is mostly caps/digits/dashes, e.g. I96711LP3, KB36-UF, TSTB-TS404-LR-25X96.
-const SKU_TAIL_RE = /\s+(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
-/** Public names never end in a SKU or model number, and never carry case sizes in parentheses. */
+// A trailing model/SKU code: at least 5 characters of caps, digits and dashes, with both a letter and a digit
+// (I96711LP3, KB36-UF, TSTB-TS404-LR-25X96). Short tokens such as '4K' or '36' are never touched.
+const SKU_TAIL_RE = /\s+((?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*)$/;
+/** Public names never end in a SKU, and never carry case sizes in parentheses. If fewer than 2 words would remain, the original name is kept. */
 function cleanDisplayName(v) {
-  if (typeof v !== 'string') return null;
-  let t = v.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
-  while (SKU_TAIL_RE.test(t)) t = t.replace(SKU_TAIL_RE, '').trim();
-  return t || null;
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const orig = v.replace(/\s+/g, ' ').trim();
+  let t = orig.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  for (let m = SKU_TAIL_RE.exec(t); m && m[1].replace(/-/g, '').length >= 5; m = SKU_TAIL_RE.exec(t)) t = t.slice(0, m.index).trim();
+  return t.split(' ').filter(Boolean).length >= 2 ? t : orig;
 }
 
 function loadCatalog(file) {
