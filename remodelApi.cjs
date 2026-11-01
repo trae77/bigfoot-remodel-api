@@ -10,6 +10,7 @@ const {
   validateGenerateBody,
   HONESTY,
   planCalls,
+  resolvedConfig,
 } = require('./remodelGenerate.cjs');
 
 const BODY_LIMIT = '10mb';
@@ -141,7 +142,7 @@ function createApp(opts = {}) {
     if (genCounter.get('ip:' + req.remodelIp) + n > cfg.perIpDaily) {
       return res.status(429).json({ error: 'Daily preview limit reached for this network.', honesty: HONESTY });
     }
-    if (p && !tokenUses.take(p, cfg.perTokenMax)) {
+    if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), n)) {
       return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
     }
     // Reserve the slot before calling fal so concurrent requests can't overshoot the cap.
@@ -202,5 +203,6 @@ if (require.main === module) {
     console.log(
       `bigfoot-remodel-api listening on :${PORT} falConfigured=${Boolean(getFalKey())} tokenSecretConfigured=${Boolean(cfg.secret)}`
     );
+    console.log('remodel_config', JSON.stringify(resolvedConfig()));
   });
 }

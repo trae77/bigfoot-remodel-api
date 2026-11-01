@@ -36,7 +36,7 @@ async function gen(base, finishes = FINISHES, img = PNG(1600, 900), token) {
     body: JSON.stringify({ projectId: 1, room: 'kitchen', image_url: img, finishes }) });
   return { status: r.status, json: await r.json(), token: t };
 }
-test.afterEach(() => { for (const k of ['REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY']) delete process.env[k]; });
+test.afterEach(() => { for (const k of ['REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN']) delete process.env[k]; });
 
 test('two calls: floor-only at 5.0 first, then the rest on pass 1 output; headers on both', async () => {
   const runs = []; const s = await boot(stubFal(runs));
@@ -59,7 +59,7 @@ test('two calls: floor-only at 5.0 first, then the rest on pass 1 output; header
 });
 
 test('cap is checked for both calls before the first: no fal call when only 1 fits', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_FAL_MODEL: 'max' });
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_FAL_MODEL: 'max', REMODEL_REQUESTS_PER_TOKEN: '10' });
   try {
     const a = await gen(s.base); assert.equal(a.status, 200); assert.equal(runs.length, 2); // $0.16 of $0.25 used
     const b = await gen(s.base, FINISHES, PNG(1600, 900), a.token);
@@ -75,9 +75,14 @@ test('pass 1 fails -> no pass 2, error to client', async () => {
   } finally { await s.close(); }
 });
 
-test('off by default, and floor-only or no-floor requests stay single-call', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_TWO_PASS: '' });
+test('on by default, REMODEL_TWO_PASS=0 turns it off, and floor-only or no-floor requests stay single-call', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_TWO_PASS: '0' });
   try { assert.equal((await gen(s.base)).status, 200); assert.equal(runs.length, 1); } finally { await s.close(); }
+  const { twoPassOn } = require('../remodelGenerate.cjs');
+  for (const [v, want] of [[undefined, true], ['', true], ['1', true], ['0', false], ['false', false], ['OFF', false], ['no', false]]) {
+    if (v === undefined) delete process.env.REMODEL_TWO_PASS; else process.env.REMODEL_TWO_PASS = v;
+    assert.equal(twoPassOn(), want, String(v));
+  }
   const { planCalls } = require('../remodelGenerate.cjs');
   process.env.REMODEL_TWO_PASS = '1';
   assert.equal(planCalls({ room: 'kitchen', prompt: 'p', finishes: { cabinets: 'white' } }).length, 1);
@@ -140,4 +145,39 @@ test('PUNCH P3-2: pass 2 throws -> pass 1 id still gets its retention and skip l
     assert.ok(logs.some((l) => l.startsWith('fal_payload_delete_skipped') && l.includes('req-pass-1')), logs.join('\n'));
     assert.ok(!logs.join('\n').includes('fal.media'), 'no URL in logs');
   } finally { console.info = orig; await s.close(); }
+});
+
+test('backsplash finish (free text) goes into pass 2 only', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_TWO_PASS: '' });
+  try {
+    const g = await gen(s.base, { floor: 'light oak', backsplash: 'white subway tile' });
+    assert.equal(g.status, 200, JSON.stringify(g.json)); assert.equal(runs.length, 2);
+    assert.ok(!/subway/.test(runs[0].body.prompt));
+    assert.match(runs[1].body.prompt, /- Backsplash: white subway tile/);
+  } finally { await s.close(); }
+});
+
+test('per-token allowance counts fal calls: a two-pass uses 2 of 3, the next two-pass is refused with no call', async () => {
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REQUESTS_PER_TOKEN: '3', REMODEL_PER_IP_DAILY: '100', REMODEL_GLOBAL_DAILY: '100' });
+  try {
+    const a = await gen(s.base); assert.equal(a.status, 200); assert.equal(runs.length, 2);
+    const b = await gen(s.base, FINISHES, PNG(1600, 900), a.token);
+    assert.equal(b.status, 401); assert.equal(runs.length, 2);
+    const c = await gen(s.base, { cabinets: 'white shaker' }, PNG(1600, 900), a.token);
+    assert.equal(c.status, 200, 'a 1-call generate still fits'); assert.equal(runs.length, 3);
+  } finally { await s.close(); }
+});
+
+test('startup config line: resolved values, no secrets or URLs', () => {
+  Object.assign(process.env, { FAL_KEY: 'sk-SECRET-fal', REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', PUBLIC_API_ORIGIN: 'https://api.example.test', REMODEL_FAL_MODEL: 'max', REMODEL_GUIDANCE: '4', REMODEL_FLOOR_GUIDANCE: '6' });
+  delete process.env.REMODEL_TWO_PASS; delete process.env.FAL_STORE_IO; delete process.env.FAL_MEDIA_EXPIRATION_SEC;
+  const { resolvedConfig } = require('../remodelGenerate.cjs');
+  const c = resolvedConfig();
+  assert.deepEqual(c, { twoPass: true, model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
+  const line = JSON.stringify(c);
+  for (const bad of ['SECRET', 'Tq7vR2', 'example.test', 'Key ']) assert.ok(!line.includes(bad), bad);
+  process.env.REMODEL_TWO_PASS = '0'; delete process.env.PUBLIC_API_ORIGIN; process.env.FAL_MEDIA_EXPIRATION_SEC = '0';
+  assert.deepEqual([resolvedConfig().twoPass, resolvedConfig().publicApiOriginSet, resolvedConfig().mediaTtlSec], [false, false, null]);
+  assert.match(require('node:fs').readFileSync(require.resolve('../remodelApi.cjs'), 'utf8'), /console\.log\('remodel_config', JSON\.stringify\(resolvedConfig\(\)\)\)/, 'logged once at startup');
+  for (const k of ['PUBLIC_API_ORIGIN', 'REMODEL_GUIDANCE', 'REMODEL_FLOOR_GUIDANCE', 'FAL_MEDIA_EXPIRATION_SEC']) delete process.env[k];
 });
