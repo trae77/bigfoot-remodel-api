@@ -189,7 +189,7 @@ test('QA P3: shaker cabinets (free text) get the five-piece door description in 
   assert.equal(cabinetPhrase('shaker', false), SHAKER_DOORS);
   assert.equal(cabinetPhrase('white slab', false), 'white slab', 'non-shaker untouched');
   assert.equal(cabinetPhrase('Shakerville oak', false), 'Shakerville oak', 'whole word only');
-  assert.match(SHAKER_DOORS, /square flat frame \(rails and stiles\) around a recessed flat center panel, no raised profile, not flat slab/);
+  assert.match(SHAKER_DOORS, /five-piece Shaker.*flat square frame around a recessed flat panel, not slab/);
   const runs = []; const s = await boot(stubFal(runs));
   try {
     assert.equal((await gen(s.base)).status, 200); assert.equal(runs.length, 2);
@@ -204,7 +204,7 @@ test('QA P3: shaker catalog cabinets use the door description with the product c
   const cat = require('../config/products.bigfoot.json'); const products = cat.products || cat;
   for (const p of products.filter((x) => x.category === 'cabinets')) {
     const pr = buildPrompt('kitchen', { cabinets: p.description }, { catalogSlots: new Set(['cabinets']) });
-    assert.ok(pr.includes(`- Cabinet faces: ${want[p.id]} ${SHAKER_DOORS}. Product: `), pr);
+    assert.ok(pr.includes(`- Cabinet faces: ${want[p.id]} ${SHAKER_DOORS}`), pr);
   }
   // Every full kitchen tier set (floor, cabinets, counters, backsplash): each pass fits the 1000-char cap.
   process.env.REMODEL_TWO_PASS = '1';

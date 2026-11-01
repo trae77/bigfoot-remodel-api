@@ -71,13 +71,25 @@ function getFalKey() {
   return key;
 }
 
-const MAX_PROMPT_CHARS = 1000;
+// Our own limit; fal publishes none for Kontext. 1200 (R60): two-pass calls all fit under 800, but the
+// single-call prompt for a full catalog kitchen (two-pass off) reaches ~1165. Over it is a clear 400.
+const MAX_PROMPT_CHARS = 1200;
 const MAX_FINISH_CHARS = 100;
 const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 // Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
 const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
 /** Free-text finishes are material words only: no money talk and no instructions to the model. */
-const FINISH_DENY_RE = /[$€£]|\b(?:dollars?|usd|prices?|pricing|costs?|cheap(?:est)?|free)\b|\b(?:ignore|disregard|forget)\b[^.]{0,40}\b(?:previous|above|prior|earlier|all)\b|\b(?:system|prompt|instructions?)\b/i;
+// Checked on the raw text (word boundaries, so 'free-form', 'cost-effective', 'price-matched', 'prompt gray' pass)
+// and on a squashed copy with spaces/hyphens/dots removed (catches 'i g n o r e', 'ig-nore').
+const FINISH_DENY_RE = /[$€£¥]|\b(?:dollars?|bucks?|usd|eur|euros?|pounds? sterling|grand|prices?|pricing|cheap(?:est)?|discount|sale|watermarks?|logos?|captions?|labels? saying)\b|\b\d+\s*(?:k|usd|eur|euros?|bucks?|grand)\b|\b(?:add|write|put|show|print|insert)\b[^.]{0,20}\b(?:text|words?|letters?|captions?|signs?|labels?)\b|\bsaying\b|\b(?:ignore|disregard|forget)\b|\b(?:system prompt|instructions?)\b|\b(?:costs?|prices?)\s*(?:is|are|of|:|\d)/i;
+const FINISH_DENY_SQUASHED_RE = /ignore|disregard|forgetprevious|systemprompt|instruction|watermark|dollar|bucks/i;
+function finishDenied(t) {
+  // Allowed compounds are removed first; any other free/cost/price word is still blocked.
+  const scrubbed = t.replace(/\b(?:free-form|freeform|cost-effective|price-matched|free-standing|freestanding)\b/gi, ' ');
+  if (FINISH_DENY_RE.test(scrubbed)) return true;
+  if (/\b(?:free|costs?|prices?)\b|\bsystem\b|\bprompts?\s*[:=]|\b(?:the|your|this|my|show|reveal|print)\s+prompts?\b/i.test(scrubbed)) return true;
+  return FINISH_DENY_SQUASHED_RE.test(t.replace(/[\s\-_.'/]+/g, ''));
+}
 const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
 const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
@@ -121,7 +133,7 @@ function validateGenerateBody(body) {
     if (typeof v !== 'string') return { error: `finishes.${k} must be a string` };
     const t = v.trim();
     if (t.length > MAX_FINISH_CHARS || !FINISH_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
-    if (FINISH_DENY_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
+    if (finishDenied(t)) return { error: `finishes.${k} is not a valid finish` };
     finishes[k] = t;
   }
   // Good/better/best picks: ids only, resolved server-side to the verified product description.
@@ -199,7 +211,8 @@ function keepList(f, hasFloor) {
   return `${keep.join(', ')} and ${last}`;
 }
 
-const SHAKER_DOORS = 'five-piece Shaker-style doors and drawer fronts: a square flat frame (rails and stiles) around a recessed flat center panel, no raised profile, not flat slab';
+// Kept short so every tier combo fits MAX_PROMPT_CHARS per fal call (R60). Meaning: five-piece Shaker, flat frame, recessed flat panel, not slab.
+const SHAKER_DOORS = 'five-piece Shaker doors and drawers: flat square frame around a recessed flat panel, not slab';
 const SHAKER_RE = /\bshaker\b/i;
 /** QA P3: a bare 'white shaker' renders as flat slab doors. Spell the door out, in the chosen color. */
 function cabinetPhrase(v, fromCatalog) {
@@ -208,7 +221,8 @@ function cabinetPhrase(v, fromCatalog) {
   if (fromCatalog) {
     // Color = the words before the first construction/style word ('Bright white painted Shaker, ...' -> 'Bright white').
     const color = raw.split(/\b(?:painted|stained|recessed|5-piece|five-piece|shaker|doors?|cabinets?)\b/i)[0].replace(/[\s,;-]+$/, '').trim();
-    return `${color ? `${color} ` : ''}${SHAKER_DOORS}. Product: ${raw}`;
+    // R60: the full product text is dropped; color + door style is what the image needs.
+    return `${color ? `${color} ` : ''}${SHAKER_DOORS}`;
   }
   const color = raw.replace(/\bshaker(?:[- ]style|[- ]type)?\b/gi, ' ').replace(/\b(?:cabinets?|doors?|style)\b/gi, ' ')
     .replace(/\s+([,;])/g, (_, c) => c).replace(/^[\s,;-]+|[\s,;-]+$/g, '').replace(/\s+/g, ' ').trim();
