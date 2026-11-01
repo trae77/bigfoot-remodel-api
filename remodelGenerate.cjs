@@ -16,8 +16,18 @@ function falGuidance() {
   const raw = (process.env.REMODEL_GUIDANCE || '').trim(); const g = Number(raw);
   return raw !== '' && Number.isFinite(g) && g >= 1 && g <= 20 ? g : 3.5;
 }
-/** Floor-first two-call edit (R59 option A) is ON by default. Only REMODEL_TWO_PASS=0 (or false/off/no) turns it off. */
-function twoPassOn() { return !/^(0|false|off|no)$/i.test((process.env.REMODEL_TWO_PASS || '').trim()); }
+/**
+ * Floor-first two-call edit (R59 option A). On for unset/''/1/true/on/yes; off for 0/false/off/no.
+ * Any other value fails closed (OFF, fewer fal calls) with one warn log per distinct value.
+ */
+const warnedTwoPass = new Set();
+function twoPassOn() {
+  const raw = (process.env.REMODEL_TWO_PASS || '').trim().toLowerCase();
+  if (['', '1', 'true', 'on', 'yes'].includes(raw)) return true;
+  if (['0', 'false', 'off', 'no'].includes(raw)) return false;
+  if (!warnedTwoPass.has(raw)) { warnedTwoPass.add(raw); console.warn('remodel_two_pass_invalid', JSON.stringify({ value: raw.slice(0, 20), using: false })); }
+  return false;
+}
 /** REMODEL_FLOOR_GUIDANCE: guidance for the floor-only pass, fal range 1-20, default 5.0. */
 function floorGuidance() {
   const raw = (process.env.REMODEL_FLOOR_GUIDANCE || '').trim(); const g = Number(raw);
@@ -66,6 +76,8 @@ const MAX_FINISH_CHARS = 100;
 const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 // Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
 const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
+/** Free-text finishes are material words only: no money talk and no instructions to the model. */
+const FINISH_DENY_RE = /[$€£]|\b(?:dollars?|usd|prices?|pricing|costs?|cheap(?:est)?|free)\b|\b(?:ignore|disregard|forget)\b[^.]{0,40}\b(?:previous|above|prior|earlier|all)\b|\b(?:system|prompt|instructions?)\b/i;
 const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
 const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
@@ -109,6 +121,7 @@ function validateGenerateBody(body) {
     if (typeof v !== 'string') return { error: `finishes.${k} must be a string` };
     const t = v.trim();
     if (t.length > MAX_FINISH_CHARS || !FINISH_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
+    if (FINISH_DENY_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
     finishes[k] = t;
   }
   // Good/better/best picks: ids only, resolved server-side to the verified product description.
@@ -123,7 +136,9 @@ function validateGenerateBody(body) {
   const img = validateImage(body.imageUrl ?? body.image_url);
   if (img.error) return img;
   const prompt = buildPrompt(room, finishes, { catalogSlots });
-  if (prompt.length > MAX_PROMPT_CHARS) return { error: 'Prompt too long' };
+  // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
+  const sent = planCalls({ room, finishes, catalogSlots, prompt });
+  if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
   const longSide = imageLongSide(img.image_url);
   if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
   return { projectId, room, finishes, catalogSlots, image_url: img.image_url, prompt, longSide };
@@ -184,12 +199,28 @@ function keepList(f, hasFloor) {
   return `${keep.join(', ')} and ${last}`;
 }
 
+const SHAKER_DOORS = 'five-piece Shaker-style doors and drawer fronts: a square flat frame (rails and stiles) around a recessed flat center panel, no raised profile, not flat slab';
+const SHAKER_RE = /\bshaker\b/i;
+/** QA P3: a bare 'white shaker' renders as flat slab doors. Spell the door out, in the chosen color. */
+function cabinetPhrase(v, fromCatalog) {
+  const raw = String(v).replace(/\s+/g, ' ').trim();
+  if (!SHAKER_RE.test(raw)) return raw;
+  if (fromCatalog) {
+    // Color = the words before the first construction/style word ('Bright white painted Shaker, ...' -> 'Bright white').
+    const color = raw.split(/\b(?:painted|stained|recessed|5-piece|five-piece|shaker|doors?|cabinets?)\b/i)[0].replace(/[\s,;-]+$/, '').trim();
+    return `${color ? `${color} ` : ''}${SHAKER_DOORS}. Product: ${raw}`;
+  }
+  const color = raw.replace(/\bshaker(?:[- ]style|[- ]type)?\b/gi, ' ').replace(/\b(?:cabinets?|doors?|style)\b/gi, ' ')
+    .replace(/\s+([,;])/g, (_, c) => c).replace(/^[\s,;-]+|[\s,;-]+$/g, '').replace(/\s+/g, ' ').trim();
+  return `${color ? `${color} ` : ''}${SHAKER_DOORS}`;
+}
+
 function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
   const hasFloor = !(f.floor == null || f.floor === '');
   const others = [
-    ['Cabinet faces', f.cabinets], ['Countertops', f.counters], ['Wall paint/tile', f.walls],
+    ['Cabinet faces', f.cabinets == null || f.cabinets === '' ? f.cabinets : cabinetPhrase(f.cabinets, fromCat.has('cabinets'))], ['Countertops', f.counters], ['Wall paint/tile', f.walls],
     ['Backsplash', f.backsplash], ['Vanity', f.vanity], ['Tub/shower', f.tub_shower],
   ].filter(([, v]) => !(v == null || v === ''));
   return [
@@ -469,6 +500,9 @@ module.exports = {
   falModel,
   falGuidance,
   planCalls,
+  FINISH_DENY_RE,
+  cabinetPhrase,
+  SHAKER_DOORS,
   resolvedConfig,
   twoPassOn,
   floorOnlyPrompt,
