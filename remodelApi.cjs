@@ -18,6 +18,7 @@ const sec = require('./security.cjs');
 
 function createApp(opts = {}) {
   const genCounter = opts.genCounter || sec.createDailyCounter();
+  const monthCounter = opts.monthCounter || sec.createMonthlyCounter();
   const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
   const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
   const imageStore = opts.imageStore || require('./imageStore.cjs').createImageStore();
@@ -136,6 +137,18 @@ function createApp(opts = {}) {
     const p = req.remodelClient && req.remodelClient.payload;
     // Count fal calls, not generates: two-pass makes 2 calls and needs 2 slots, checked before the first call.
     const n = planCalls(req.remodelValid).length;
+    let used;
+    try {
+      // Monthly hard cap (UTC calendar month). Fails CLOSED: any counter error or bad value = no render.
+      used = monthCounter.get();
+      if (!Number.isFinite(used) || used < 0) throw new Error('bad monthly count');
+    } catch (_e) {
+      console.warn('remodel_monthly_cap_unavailable');
+      return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+    }
+    if (used + n > cfg.globalMonthly) {
+      return res.status(429).json({ error: 'Monthly preview limit reached. Try again next month.', honesty: HONESTY });
+    }
     if (genCounter.get('global') + n > cfg.globalDaily) {
       return res.status(429).json({ error: 'Daily preview limit reached. Try again tomorrow.', honesty: HONESTY });
     }
@@ -146,6 +159,12 @@ function createApp(opts = {}) {
       return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
     }
     // Reserve the slot before calling fal so concurrent requests can't overshoot the cap.
+    try {
+      for (let i = 0; i < n; i++) monthCounter.inc();
+    } catch (_e) {
+      console.warn('remodel_monthly_cap_unavailable');
+      return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+    }
     for (let i = 0; i < n; i++) {
       genCounter.inc('global');
       genCounter.inc('ip:' + req.remodelIp);

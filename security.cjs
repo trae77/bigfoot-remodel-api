@@ -35,6 +35,8 @@ function getConfig() {
     perIpDaily: intEnv('REMODEL_PER_IP_DAILY', 5),
     globalDaily: intEnv('REMODEL_GLOBAL_DAILY', 25),
     tokensPerIpDaily: intEnv('REMODEL_TOKENS_PER_IP_DAILY', 10),
+    // Global hard cap per calendar month (UTC), counted in fal calls like the daily caps. Env-only; no client override.
+    globalMonthly: intEnv('REMODEL_GLOBAL_MONTHLY', 120),
     perTokenMax: intEnv('REMODEL_REQUESTS_PER_TOKEN', MAX_REQUESTS_PER_TOKEN),
   };
 }
@@ -119,6 +121,21 @@ function createDailyCounter() {
   };
 }
 
+/** UTC-calendar-month counter (YYYY-MM). Same shape as the daily counter; resets when the UTC month changes. */
+function createMonthlyCounter() {
+  let month = '';
+  let count = 0;
+  function roll(now) {
+    const m = new Date(now).toISOString().slice(0, 7);
+    if (m !== month) { month = m; count = 0; }
+  }
+  return {
+    get(now = Date.now()) { roll(now); return count; },
+    inc(now = Date.now()) { roll(now); count += 1; },
+    reset() { month = ''; count = 0; },
+  };
+}
+
 /** Per-token use counts keyed on the token nonce; entries are dropped after the token expires. */
 function createTokenUseTracker() {
   const map = new Map();
@@ -151,4 +168,5 @@ module.exports = {
   verifyToken,
   safeEqual,
   createDailyCounter,
+  createMonthlyCounter,
 };
