@@ -35,6 +35,8 @@ function getConfig() {
     perIpDaily: intEnv('REMODEL_PER_IP_DAILY', 5),
     globalDaily: intEnv('REMODEL_GLOBAL_DAILY', 25),
     tokensPerIpDaily: intEnv('REMODEL_TOKENS_PER_IP_DAILY', 10),
+    // Global hard cap per calendar month (UTC), counted in fal calls like the daily caps. Env-only; no client override.
+    globalMonthly: intEnv('REMODEL_GLOBAL_MONTHLY', 120),
     perTokenMax: intEnv('REMODEL_REQUESTS_PER_TOKEN', MAX_REQUESTS_PER_TOKEN),
   };
 }
@@ -151,4 +153,5 @@ module.exports = {
   verifyToken,
   safeEqual,
   createDailyCounter,
+  ipHash,
 };

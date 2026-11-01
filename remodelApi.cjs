@@ -17,7 +17,8 @@ const BODY_LIMIT = '10mb';
 const sec = require('./security.cjs');
 
 function createApp(opts = {}) {
-  const genCounter = opts.genCounter || sec.createDailyCounter();
+  const caps = require('./capStore.cjs');
+  const capStore = opts.capStore || caps.capStoreFromEnv(process.env);
   const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
   const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
   const imageStore = opts.imageStore || require('./imageStore.cjs').createImageStore();
@@ -131,24 +132,33 @@ function createApp(opts = {}) {
 
   // Daily caps checked before any fal call; counted per IP and globally, plus a per-token allowance.
   // Only valid requests reach here. A reserved slot stays used even if fal later fails: fail-safe for spend.
-  function capGate(req, res, next) {
+  async function capGate(req, res, next) {
     const cfg = req.remodelCfg;
     const p = req.remodelClient && req.remodelClient.payload;
     // Count fal calls, not generates: two-pass makes 2 calls and needs 2 slots, checked before the first call.
     const n = planCalls(req.remodelValid).length;
-    if (genCounter.get('global') + n > cfg.globalDaily) {
-      return res.status(429).json({ error: 'Daily preview limit reached. Try again tomorrow.', honesty: HONESTY });
+    const { day, month } = caps.periodKeys();
+    const ipKey = sec.ipHash(cfg.secret, req.remodelIp);
+    let r;
+    try {
+      // Durable, atomic, all-or-nothing reservation BEFORE any fal call. Fails closed on any store problem.
+      r = await caps.reserveAll(capStore, [
+        [`m:${month}:global`, cfg.globalMonthly, 'month'],
+        [`d:${day}:global`, cfg.globalDaily, 'day'],
+        [`d:${day}:ip:${ipKey}`, cfg.perIpDaily, 'ip'],
+      ], n);
+    } catch (_e) {
+      console.warn('remodel_cap_store_unavailable');
+      return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
     }
-    if (genCounter.get('ip:' + req.remodelIp) + n > cfg.perIpDaily) {
-      return res.status(429).json({ error: 'Daily preview limit reached for this network.', honesty: HONESTY });
+    if (!r.ok) {
+      const msg = r.which === 'month' ? 'Monthly preview limit reached. Try again next month.'
+        : r.which === 'ip' ? 'Daily preview limit reached for this network.' : 'Daily preview limit reached. Try again tomorrow.';
+      return res.status(429).json({ error: msg, honesty: HONESTY });
     }
     if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), n)) {
+      // Cap slots stay reserved (fail-safe for spend).
       return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
-    }
-    // Reserve the slot before calling fal so concurrent requests can't overshoot the cap.
-    for (let i = 0; i < n; i++) {
-      genCounter.inc('global');
-      genCounter.inc('ip:' + req.remodelIp);
     }
     return next();
   }
