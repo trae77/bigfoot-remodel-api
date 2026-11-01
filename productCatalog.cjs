@@ -23,7 +23,7 @@ function loadCatalog(file) {
     if (!catIds.has(p.category) || !tiers.includes(p.tier)) continue;
     if (typeof p.source_url !== 'string' || !/^https:\/\//.test(p.source_url)) continue;
     if (typeof p.description !== 'string' || !p.description.trim() || PRICE_RE.test(p.description) || PRICE_RE.test(p.name || '')) continue;
-    byId.set(p.id, { id: p.id, category: p.category, tier: p.tier, name: String(p.name || ''), description: p.description.trim(), tierLabel: typeof p.tierLabel === 'string' ? p.tierLabel : null });
+    byId.set(p.id, { id: p.id, category: p.category, tier: p.tier, name: String(p.name || ''), description: p.description.trim(), tierLabel: typeof p.tierLabel === 'string' ? p.tierLabel : null, displayName: typeof p.displayName === 'string' && p.displayName.trim() ? p.displayName.trim() : null });
   }
   const quoteOnly = (raw.quoteOnly || []).filter((q) => q && catIds.has(q.category)).map((q) => ({ category: q.category, tier: String(q.tier), label: String(q.label || 'Quote-only') }));
   return { tiers, categories, byId, quoteOnly };
@@ -45,7 +45,8 @@ function publicCatalog(cat = getCatalog()) {
       options: cat.tiers.map((t) => {
         const p = cat.byId.get(`${c.id}.${t}`);
         const label = (p && p.tierLabel) || t[0].toUpperCase() + t.slice(1);
-        if (p) return { id: p.id, tier: t, label, available: true, name: p.name };
+        // Public name is the short display name only (no SKU or case size); without one, only the tier label shows.
+        if (p) return { id: p.id, tier: t, label, available: true, ...(p.displayName ? { name: p.displayName } : {}) };
         const q = cat.quoteOnly.find((x) => x.category === c.id && x.tier === t);
         return { id: `${c.id}.${t}`, tier: t, label, available: false, note: q ? 'quote-only' : 'unavailable' };
       }).concat(cat.quoteOnly.filter((q) => q.category === c.id && !cat.tiers.includes(q.tier))

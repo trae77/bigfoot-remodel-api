@@ -154,3 +154,25 @@ test('confirmed delete logs fal_payload_delete_ok {id, files}; failure ALERT car
     } finally { await s.close(); }
   }
 });
+
+test('/tiers names are short display names: no SKUs, case sizes or dimensions-with-SKU', async () => {
+  fresh(); const s = await start();
+  try {
+    const r = await s.req('/api/remodel/tiers', { method: 'GET' });
+    const opts = r.json.categories.flatMap((c) => c.options).filter((o) => o.available);
+    assert.equal(opts.length, 17);
+    for (const o of opts) {
+      assert.ok(o.name && o.name.length <= 40, o.id);
+      assert.doesNotMatch(o.name, /\b[A-Z0-9]+-[A-Z0-9-]{2,}\b|\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b|sq\.? ?ft|\/case|\(/, o.id);
+    }
+  } finally { await s.close(); }
+});
+
+test('original 10-29 products use Research visual descriptions in the prompt', () => {
+  const byId = Object.fromEntries(cat.products.map((p) => [p.id, p]));
+  for (const id of ['flooring.good', 'flooring.better', 'flooring.best', 'cabinets.good', 'countertops.good', 'backsplash.good', 'backsplash.better', 'vanity.good', 'vanity.better', 'vanity.best', 'tub_shower.good']) {
+    assert.ok(byId[id].visual_source || byId[id].verification.startsWith('gap-fill'), id);
+    assert.doesNotMatch(byId[id].description, /\b(I96711LP3|50296|C1134|KB36-UF|TOP157198|RE15412MODHD1P2|29264-BD1-0|BVS2-C5143-WH)\b/, id);
+  }
+  assert.match(byId['flooring.good'].description, /^Brown oak-look vinyl plank/);
+});

@@ -114,7 +114,7 @@ const PATTERN_RE = /\b(herringbone|parquet|basket-?weave|chevron)\b/i;
 function floorInstruction(v, fromCatalog) {
   const target = fromCatalog ? String(v).trim() : floorPhrase(v);
   const patterned = PATTERN_RE.test(target.replace(/no parquet or herringbone/gi, ''));
-  const planks = !patterned && /\b(plank|lvp|hardwood|vinyl|laminate|wood)\b/i.test(target);
+  const planks = !patterned && /\b(plank|planks|lvp|hardwood|vinyl|laminate|wood|oak|strips?)\b/i.test(target);
   const parts = [`replace the existing floor entirely with ${target}`];
   parts.push(patterned ? 'remove all existing floor pattern and finish' : 'remove all existing floor pattern (including any parquet or herringbone)');
   if (planks && !/long straight planks/i.test(target)) parts.push('long straight planks');
