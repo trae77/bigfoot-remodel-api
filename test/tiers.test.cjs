@@ -110,7 +110,7 @@ test('unknown, unavailable, wrong-category and free-text tier ids give 400 with 
 test('every floor tier and legacy floor option is an explicit full replacement that leads the prompt', () => {
   fresh();
   const { buildPrompt } = require('../remodelGenerate.cjs');
-  const END = '; the new floor covers every visible floor area edge to edge and none of the old floor pattern, color or grain remains.\n';
+  const END = '; covering all visible floor edge to edge, none of the old floor left.\n';
   for (const p of cat.products.filter((x) => x.category === 'flooring')) {
     const pr = buildPrompt('kitchen', { floor: p.description }, { catalogSlots: new Set(['floor']) });
     assert.match(pr.split('\n')[1], /^Main edit - Floor: replace the entire existing floor with /, p.id);
@@ -119,7 +119,7 @@ test('every floor tier and legacy floor option is an explicit full replacement t
   }
   for (const v of ['Luxury vinyl plank', 'Light wood-look', 'Large format gray tile', 'Polished concrete look']) {
     const pr = buildPrompt('kitchen', { floor: v });
-    assert.match(pr, /\nMain edit - Floor: replace the entire existing floor with .+; the new floor covers every visible floor area/, v);
+    assert.match(pr, /\nMain edit - Floor: replace the entire existing floor with .+; covering all visible floor edge to edge/, v);
   }
   assert.ok(buildPrompt('kitchen', { floor: 'Large format gray tile' }).includes('with Large format gray tile' + END));
   assert.ok(buildPrompt('kitchen', { floor: 'White oak herringbone' }).includes('with white oak hardwood flooring in a herringbone pattern' + END));

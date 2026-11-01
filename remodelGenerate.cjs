@@ -81,14 +81,32 @@ const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laun
 /** Free-text finishes are material words only: no money talk and no instructions to the model. */
 // Checked on the raw text (word boundaries, so 'free-form', 'cost-effective', 'price-matched', 'prompt gray' pass)
 // and on a squashed copy with spaces/hyphens/dots removed (catches 'i g n o r e', 'ig-nore').
-const FINISH_DENY_RE = /[$€£¥]|\b(?:dollars?|bucks?|usd|eur|euros?|pounds? sterling|grand|prices?|pricing|cheap(?:est)?|discount|sale|watermarks?|logos?|captions?|labels? saying)\b|\b\d+\s*(?:k|usd|eur|euros?|bucks?|grand)\b|\b(?:add|write|put|show|print|insert)\b[^.]{0,20}\b(?:text|words?|letters?|captions?|signs?|labels?)\b|\bsaying\b|\b(?:ignore|disregard|forget)\b|\b(?:system prompt|instructions?)\b|\b(?:costs?|prices?)\s*(?:is|are|of|:|\d)/i;
-const FINISH_DENY_SQUASHED_RE = /ignore|disregard|forgetprevious|systemprompt|instruction|watermark|dollar|bucks/i;
+// QA P3 (PUNCH-e60b965): money words need whole-word or number context, so dollarweed, 'grand oak', Buckskin,
+// bucksaw, logo, caption, 'system white' and 4K/5k/2k pass; leetspeak (ign0re, w4termark) is folded before the squashed check.
+const MONEY_UNIT = '(?:dollars?|bucks?|usd|eur|euros?|quid|pounds?|grand|percent|k\\s*(?:dollars?|usd|bucks?))';
+const FINISH_DENY_RE = new RegExp([
+  '[$€£¥%]',
+  '\\b(?:dollars?|bucks|usd|eur|euros?|quid|pounds? sterling|prices?|pricing|cheap(?:est)?|discount(?:ed)?|sale|clearance|markdowns?|bargains?|deals?|coupons?|promos?|promotions?|rebates?|budget|affordable|half[ -]?off|watermarks?|labels? saying)\\b',
+  `\\b\\d[\\d,.]*\\s*${MONEY_UNIT}\\b`,
+  '\\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|hundred|thousand)\\s+' + MONEY_UNIT + '\\b',
+  '\\b\\d+\\s*(?:percent|pct)\\s*off\\b|\\bpay\\s+(?:nothing|less|only)\\b',
+  '\\b(?:add|write|put|show|print|insert)\\b[^.]{0,20}\\b(?:text|words?|letters?|captions?|logos?|signs?|labels?)\\b',
+  '\\bsaying\\b|\\b(?:ignore|disregard|forget)\\b|\\b(?:system prompt|instructions?)\\b',
+  "\\b(?:do\\s+not|don'?t|never|stop)\\s+(?:follow|obey)\\b|\\b(?:follow|obey|break)\\s+(?:no|the|any|your|these)?\\s*rules\\b",
+  '\\b(?:costs?|prices?)\\s*(?:is|are|of|:|\\d)',
+].join('|'), 'i');
+const FINISH_DENY_SQUASHED_RE = /ignore|disregard|forgetprevious|systemprompt|instruction|watermark|\d(?:dollars?|bucks|usd|euros?|quid)/i;
+const LEET = { 0: 'o', 1: 'i', 3: 'e', 4: 'a', 5: 's', 7: 't', '@': 'a', '!': 'i', '|': 'i' };
+/** Leetspeak folded only for the instruction words (digits stay digits for the money check). */
+function deLeet(t) { return t.replace(/[013457@!|]/g, (c) => LEET[c]); }
 function finishDenied(t) {
   // Allowed compounds are removed first; any other free/cost/price word is still blocked.
   const scrubbed = t.replace(/\b(?:free-form|freeform|cost-effective|price-matched|free-standing|freestanding)\b/gi, ' ');
   if (FINISH_DENY_RE.test(scrubbed)) return true;
-  if (/\b(?:free|costs?|prices?)\b|\bsystem\b|\bprompts?\s*[:=]|\b(?:the|your|this|my|show|reveal|print)\s+prompts?\b/i.test(scrubbed)) return true;
-  return FINISH_DENY_SQUASHED_RE.test(t.replace(/[\s\-_.'/]+/g, ''));
+  if (/\b(?:free|costs?|prices?)\b|\b(?:system|prompts?)\s*[:=]|\bsystem\s+(?:message|role|override)\b|\b(?:the|your|this|my|show|reveal|print)\s+prompts?\b/i.test(scrubbed)) return true;
+  const squashed = t.replace(/[\s\-_.'/]+/g, '');
+  if (FINISH_DENY_SQUASHED_RE.test(squashed)) return true;
+  return /ignore|disregard|forget|watermark|systemprompt|instruction/i.test(deLeet(squashed));
 }
 const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
@@ -189,13 +207,17 @@ function floorPhrase(v) {
  * Every chosen floor, legacy option or catalog product, is phrased as an explicit full replacement.
  */
 const PATTERN_RE = /\b(herringbone|parquet|basket-?weave|chevron)\b/i;
-function floorInstruction(v, fromCatalog) {
+// Pass 1 (two-pass, R59-proven) keeps the long cover tail; the single-call prompt uses the short one so every
+// full bathroom/kitchen tier set fits MAX_PROMPT_CHARS with REMODEL_TWO_PASS off (QA P3-4).
+const FLOOR_COVER_LONG = 'the new floor covers every visible floor area edge to edge and none of the old floor pattern, color or grain remains';
+const FLOOR_COVER_SHORT = 'covering all visible floor edge to edge, none of the old floor left';
+function floorInstruction(v, fromCatalog, short = false) {
   const target = stripNegations(fromCatalog ? String(v).trim() : floorPhrase(v));
   const patterned = PATTERN_RE.test(target);
   const planks = !patterned && /\b(plank|planks|lvp|hardwood|vinyl|laminate|wood|oak|strips?)\b/i.test(target);
   const parts = [`replace the entire existing floor with ${target}`];
   if (planks && !/long straight (parallel )?planks/i.test(target)) parts.push('laid as long straight parallel planks');
-  parts.push('the new floor covers every visible floor area edge to edge and none of the old floor pattern, color or grain remains');
+  parts.push(short ? FLOOR_COVER_SHORT : FLOOR_COVER_LONG);
   return parts.join('; ');
 }
 
@@ -204,8 +226,9 @@ function floorInstruction(v, fromCatalog) {
  * The floor is the edit it most often skips, so it leads, on its own line, ahead of the other finishes.
  */
 /** What to keep, minus anything this prompt asks to change (a51aaa6 said "keep walls" while also changing wall paint). */
-function keepList(f, hasFloor) {
-  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', 'cabinet layout', 'appliance footprints', 'fixture layout', 'room dimensions'];
+function keepList(f, hasFloor, room) {
+  const layout = room === 'bathroom' ? ['fixture layout'] : ['cabinet layout', 'appliance footprints', 'fixture layout'];
+  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', ...layout, 'room dimensions'];
   if (!hasFloor) keep.push('the floor');
   const last = keep.pop();
   return `${keep.join(', ')} and ${last}`;
@@ -239,11 +262,11 @@ function buildPrompt(room, finishes, opts = {}) {
   ].filter(([, v]) => !(v == null || v === ''));
   return [
     `Edit this photo of a ${room || 'kitchen'}.`,
-    ...(hasFloor ? [`Main edit - Floor: ${floorInstruction(f.floor, fromCat.has('floor'))}.`] : []),
+    ...(hasFloor ? [`Main edit - Floor: ${floorInstruction(f.floor, fromCat.has('floor'), true)}.`] : []),
     ...(others.length ? [hasFloor ? 'Also change these finishes:' : 'Change these finishes:', ...others.map(([k, v]) => `- ${k}: ${v}`)] : []),
     '',
-    `Keep everything else exactly as in the photo: ${keepList(f, hasFloor)}. Do not add people, text overlays, or new furniture.`,
-    'Output a single photoreal still suitable as an AI preview.',
+    `Keep everything else exactly as in the photo: ${keepList(f, hasFloor, room)}. Do not add people, text overlays, or new furniture.`,
+    'Output one photoreal still.',
   ].join('\n');
 }
 
