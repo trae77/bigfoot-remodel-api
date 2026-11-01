@@ -57,12 +57,12 @@ Note: the per-token allowance (REMODEL_REQUESTS_PER_TOKEN, default 3) must be at
 
 Kitchen keeps the floor/cabinets/counters plan. Other rooms get their own regions, one cap-counted call per region the user picked. Every prompt has the keep-objects line plus a room keep line. No exterior/siding preset.
 
-| Room (`room`) | Regions (field) | Kept | Max calls | Pro 0.04 | Max 0.08 | Fill 0.16 cap | Failover worst case (+qwen 0.16) |
+| Room (`room`) | Regions (field) | Kept | Max calls | Pro 0.04 | Max 0.08 | Fill 0.16 cap | Failover (each failed call +0.16 qwen) |
 |---|---|---|---|---|---|---|---|
-| kitchen (default) | floor, cabinets, counters (+walls/backsplash ride along) | appliances, furniture | 3 | 0.12 | 0.24 | 0.48 | 0.36 pro (capped by REMODEL_RENDER_MAX_USD 0.50) |
-| bathroom | vanity (tier), floor, tub_shower (tier), walls = wall tile | toilet, mirror, fixtures | 4 (set REMODEL_REQUESTS_PER_TOKEN=4) | 0.16 | 0.32 | 0.64 (refused by 0.50 ceiling) | 0.48 pro |
-| living | floor, walls, builtins | sofas, chairs, tables, TV, rugs, decor | 3 | 0.12 | 0.24 | 0.48 | 0.36 pro |
-| bedroom | floor, walls, closet_doors | bed, nightstands, dresser, furniture | 3 | 0.12 | 0.24 | 0.48 | 0.36 pro |
+| kitchen (default) | floor, cabinets, counters (+walls/backsplash ride along) | appliances, furniture | 3 | 0.12 | 0.24 | 0.48 | stopped at REMODEL_RENDER_MAX_USD (default 0.50) |
+| bathroom | vanity (tier), floor, tub_shower (tier), walls = wall tile | toilet, mirror, fixtures | 4 (set REMODEL_REQUESTS_PER_TOKEN=4) | 0.16 | 0.32 | 0.64 (refused by 0.50 ceiling) | stopped at REMODEL_RENDER_MAX_USD (default 0.50) |
+| living | floor, walls, builtins | sofas, chairs, tables, TV, rugs, decor | 3 | 0.12 | 0.24 | 0.48 | stopped at REMODEL_RENDER_MAX_USD (default 0.50) |
+| bedroom | floor, walls, closet_doors | bed, nightstands, dresser, furniture | 3 | 0.12 | 0.24 | 0.48 | stopped at REMODEL_RENDER_MAX_USD (default 0.50) |
 
 Prices are not hardcoded: they come from the engine price env vars; the table uses the defaults above. Fewer picked regions = fewer calls.
 
