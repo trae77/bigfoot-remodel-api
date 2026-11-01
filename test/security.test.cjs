@@ -12,9 +12,13 @@ function setEnv(env) {
 }
 
 let falCalls = 0;
-const fakeFetch = async () => {
+const JPG_OUT = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
+const fakeFetch = async (url, init = {}) => {
+  if (String(url).startsWith('https://v3.fal.media/')) return { ok: true, status: 200, headers: hdrs({ 'content-type': 'image/jpeg' }), arrayBuffer: async () => JPG_OUT };
+  if (String(url).startsWith('https://api.fal.ai/')) return { ok: true, status: 200, json: async () => ({ cdn_delete_results: [] }) };
   falCalls += 1;
-  return { ok: true, status: 200, text: async () => JSON.stringify({ images: [{ url: 'https://img/x.jpg' }], seed: 1 }) };
+  return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }), text: async () => JSON.stringify({ images: [{ url: 'https://v3.fal.media/files/x.jpg' }], seed: 1 }) };
 };
 
 async function start(env) {
@@ -98,7 +102,8 @@ test('valid signed token works; tampered, wrong-IP, expired tokens fail', async 
     const tok = await getToken(s.base, '2.2.2.2');
     const ok = await call(s.base, '/api/remodel/generate', { token: tok, ip: '2.2.2.2', body: GEN });
     assert.equal(ok.status, 200);
-    assert.equal(ok.json.afterImageUrl, 'https://img/x.jpg');
+    assert.match(ok.json.afterImageUrl, /^\/api\/remodel\/image\/[A-Za-z0-9_-]+\?exp=\d+&sig=/);
+    assert.ok(!JSON.stringify(ok.json).includes('fal.media'));
     const [a, p, sig] = tok.split('.');
     const bad = `${a}.${p}.${sig.slice(0, -2)}${sig.endsWith('AA') ? 'BB' : 'AA'}`;
     assert.equal((await call(s.base, '/api/remodel/generate', { token: bad, ip: '2.2.2.2', body: GEN })).status, 401);
@@ -307,4 +312,26 @@ test('P3 key handling: only FAL_KEY is read; split/base64 variants are ignored',
   process.env.FAL_KEY = '  fake-key  ';
   assert.equal(g.getFalKey(), 'fake-key');
   setEnv({});
+});
+
+test('BF #46 P2-1: valid token + generate body {} -> 400 before caps and fal (counter untouched, fal never called)', async () => {
+  setEnv({ FAL_KEY: 'fake-fal', REMODEL_TOKEN_SECRET: SECRET });
+  for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
+  const sec = require('../security.cjs');
+  const genCounter = sec.createDailyCounter();
+  let incs = 0; const realInc = genCounter.inc.bind(genCounter); genCounter.inc = (...a) => { incs++; return realInc(...a); };
+  const urls = []; const spyFetch = async (u, i) => { urls.push(String(u)); return fakeFetch(u, i); };
+  const { createApp } = require('../remodelApi.cjs');
+  const server = http.createServer(createApp({ fetchImpl: spyFetch, genCounter }));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const IP = '8.9.0.1';
+    const tok = await getToken(base, IP);
+    const r = await call(base, '/api/remodel/generate', { token: tok, ip: IP, body: {} });
+    assert.equal(r.status, 400);
+    assert.equal(urls.length, 0, 'fal (or any upstream) never called');
+    assert.equal(incs, 0, 'daily cap not incremented');
+    assert.equal(genCounter.get('global'), 0); assert.equal(genCounter.get('ip:' + IP), 0);
+  } finally { await new Promise((r) => server.close(r)); }
 });

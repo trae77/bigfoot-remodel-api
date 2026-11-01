@@ -6,6 +6,7 @@
 
 const FAL_MODEL = 'fal-ai/flux-pro/kontext';
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
+const store = require('./imageStore.cjs');
 const COST_PER_STILL_USD = 0.04;
 const MAX_GENERATES_PER_SESSION = 5;
 const MAX_SESSION_SPEND_USD = 0.25;
@@ -77,6 +78,24 @@ function validateGenerateBody(body) {
   return { projectId, room, finishes, image_url: img.image_url, prompt };
 }
 
+const PLANK_TAIL = 'hardwood flooring, long straight planks, no parquet or herringbone';
+const WOOD_RE = /\b(oak|walnut|maple|hickory|cherry|ash|birch|pine|teak|acacia|hardwood|wood)\b/i;
+const NOT_WOOD_RE = /\b(tile|vinyl|lvp|laminate|carpet|concrete|stone|marble|porcelain|ceramic|epoxy)\b/i;
+/** Wood floor choices become explicit wide-plank wording so the model doesn't drift to parquet or herringbone. */
+function floorPhrase(v) {
+  const raw = String(v).trim();
+  if ((!WOOD_RE.test(raw) && !/\b(herringbone|parquet|basket-?weave)\b/i.test(raw)) || NOT_WOOD_RE.test(raw)) return raw;
+  const pat = /\bherringbone\b/i.test(raw) ? 'herringbone' : /\b(parquet|basket-?weave)\b/i.test(raw) ? 'parquet' : null;
+  if (pat) {
+    // Explicit pattern choice is kept, with its wood type.
+    const wood = raw.replace(/\b(hardwood|wood|floor(?:ing|s)?|planks?|herringbone|parquet|basket-?weave|pattern)\b/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    return `${wood ? wood + ' ' : ''}hardwood flooring in a ${pat} pattern`;
+  }
+  if (/\blight\b/i.test(raw) && /\boak\b/i.test(raw)) return `wide-plank light oak ${PLANK_TAIL}`;
+  const desc = raw.replace(/\b(hardwood|wood|floor(?:ing|s)?|planks?|wide-plank|wide|parquet|herringbone)\b/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  return `wide-plank ${desc ? desc + ' ' : ''}${PLANK_TAIL}`;
+}
+
 function buildPrompt(room, finishes) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const line = (v) => {
@@ -88,7 +107,7 @@ function buildPrompt(room, finishes) {
     '',
     `Room type: ${room || 'kitchen'}.`,
     'Change only these finishes:',
-    `- Floor: ${line(f.floor)}`,
+    `- Floor: ${f.floor == null || f.floor === '' ? 'unchanged' : floorPhrase(f.floor)}`,
     `- Cabinet faces: ${line(f.cabinets)}`,
     `- Countertops: ${line(f.counters)}`,
     `- Wall paint/tile: ${line(f.walls)}`,
@@ -175,6 +194,8 @@ async function callFalKontext(input, opts = {}) {
     err.falStatus = res.status;
     throw err;
   }
+  const rid = res.headers && res.headers.get ? res.headers.get('x-fal-request-id') : null;
+  if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
   return data;
 }
 
@@ -209,27 +230,48 @@ function createRemodelGenerateHandler(deps) {
       const remaining = remainingGenerates(budget);
       if (remaining <= 0) {
         return res.status(429).json({
-          error: 'Session generate cap reached (max 5 stills or ~$0.25). Start a new browser session or try later.',
+          error: 'Session preview limit reached. Start a new browser session or try later.',
           remainingSessionGenerates: 0,
-          estimatedCostUsd: COST_PER_STILL_USD,
           honesty: HONESTY,
         });
       }
 
       const data = await callFalKontext({ prompt, image_url }, { fetchImpl: deps.fetchImpl });
-      const afterImageUrl = data?.images?.[0]?.url;
-      if (!afterImageUrl) {
-        return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
-      }
-
+      // fal has billed once it returns: charge the session now, even if the download below fails.
       budget.count += 1;
       budget.spendUsd += COST_PER_STILL_USD;
       budget.updatedAt = Date.now();
       sessionSpend.set(sessionKey, budget);
 
+      const falUrl = data?.images?.[0]?.url;
+      if (!falUrl) {
+        return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
+      }
+      // Privacy: copy the render into private in-process storage, then delete it from fal.
+      // The public fal URL is never sent to the client.
+      const fetchImpl = deps.fetchImpl || globalThis.fetch;
+      let stored;
+      try {
+        stored = await store.fetchFalImage(falUrl, fetchImpl);
+      } finally {
+        // Never block the client on fal's delete: run it after the response is sent (capped at 3 s in imageStore).
+        const rid = data.__falRequestId; const key = getFalKey();
+        setImmediate(() => {
+          store.deleteFalPayload(rid, key, fetchImpl).then((del) => {
+            if (del.ok) return;
+            // No URL, key or request id in the log.
+            console.error('ALERT fal_payload_delete_failed', JSON.stringify({ status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
+            if (typeof deps.onFalDeleteFail === 'function') Promise.resolve().then(() => deps.onFalDeleteFail(del)).catch(() => {});
+          }).catch(() => console.error('ALERT fal_payload_delete_failed', JSON.stringify({ reason: 'exception' })));
+        });
+      }
+      const id = deps.imageStore.put(stored.buf, stored.type);
+      const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
+      const afterImageUrl = store.signedImagePath(secret, id);
+
       return res.status(200).json({
         afterImageUrl,
-        estimatedCostUsd: COST_PER_STILL_USD,
+        afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
         provider: FAL_MODEL,
@@ -240,7 +282,7 @@ function createRemodelGenerateHandler(deps) {
       if (e && e.code === 'MISSING_KEY') {
         return res.status(503).json({ error: 'Remodel generate is not configured (missing FAL_KEY)', honesty: HONESTY });
       }
-      if (e && e.code === 'FAL_UPSTREAM') {
+      if (e && (e.code === 'FAL_UPSTREAM' || e.code === 'FAL_FETCH')) {
         return res.status(502).json({ error: 'Image service failed — try again later', honesty: HONESTY });
       }
       console.error('remodel/generate error', e && e.message ? e.message : e);
@@ -257,6 +299,7 @@ module.exports = {
   HONESTY,
   getFalKey,
   buildPrompt,
+  floorPhrase,
   validateGenerateBody,
   validateImage,
   MAX_PROMPT_CHARS,

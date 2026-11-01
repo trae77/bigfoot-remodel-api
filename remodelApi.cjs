@@ -18,9 +18,17 @@ function createApp(opts = {}) {
   const genCounter = opts.genCounter || sec.createDailyCounter();
   const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
   const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
+  const imageStore = opts.imageStore || require('./imageStore.cjs').createImageStore();
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', false);
+
+  // Baseline security headers on every response.
+  app.use((_req, res, next) => {
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.set('X-Content-Type-Options', 'nosniff');
+    return next();
+  });
 
   // CORS on every /api route (health included): echo only an allowlisted Origin, never credentials.
   app.use('/api', (req, res, next) => {
@@ -43,6 +51,25 @@ function createApp(opts = {}) {
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true, service: 'bigfoot-remodel-api' });
   });
+
+  // Private render download: HMAC-signed, <=15 min, random id only. No Origin needed (used in <img src>).
+  app.get('/api/remodel/image/:id', (req, res) => {
+    const cfg = sec.getConfig();
+    const { exp, sig } = req.query;
+    if (!require('./imageStore.cjs').verifyImageSig(cfg.secret, req.params.id, exp, String(sig || ''))) {
+      return res.status(403).json({ error: 'Link expired or invalid', honesty: HONESTY });
+    }
+    const e = imageStore.get(req.params.id);
+    if (!e) return res.status(404).json({ error: 'Not found', honesty: HONESTY });
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Content-Type', e.type);
+    return res.send(e.buf);
+  });
+  const sweepTimer = setInterval(() => imageStore.sweep(), 60 * 1000);
+  if (sweepTimer.unref) sweepTimer.unref();
+  app.stopSweep = () => clearInterval(sweepTimer);
+  const listen = app.listen.bind(app);
+  app.listen = (...a) => { const srv = listen(...a); srv.on('close', app.stopSweep); return srv; };
 
   // Strict Origin gate on every /api/remodel/* request (incl. preflight). No Origin => 403.
   app.use('/api/remodel', (req, res, next) => {
@@ -134,8 +161,14 @@ function createApp(opts = {}) {
       getClientFromToken: async (req) => req.remodelClient || null,
       ownerTokens: new Set(),
       fetchImpl: opts.fetchImpl,
+      onFalDeleteFail: opts.onFalDeleteFail,
+      imageStore,
     })
   );
+
+
+  // JSON 404 for unknown routes (no Express HTML page).
+  app.use((_req, res) => res.status(404).json({ error: 'Not found', honesty: HONESTY }));
 
   app.use((err, _req, res, _next) => {
     if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large', honesty: HONESTY });
