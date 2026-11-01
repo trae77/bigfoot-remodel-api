@@ -51,3 +51,21 @@ test('keep list never contradicts an edit: changing wall paint drops "walls" fro
   assert.ok(!/the floor/.test(keep));
   assert.match(buildPrompt('kitchen', { cabinets: 'x' }), /Keep everything else exactly as in the photo: walls, /);
 });
+
+test('floorPhrase strips "no ..." negations before it looks for a pattern word', () => {
+  assert.equal(floorPhrase('no parquet please oak'), `wide-plank please oak ${TAIL}`);
+  assert.ok(!/pattern|parquet/.test(floorPhrase('no parquet please oak')));
+  assert.equal(floorPhrase('Oak without herringbone'), `wide-plank oak ${TAIL}`);
+  assert.equal(floorPhrase('Walnut, no parquet or herringbone'), `wide-plank walnut ${TAIL}`);
+  assert.equal(floorPhrase('White oak herringbone'), 'white oak hardwood flooring in a herringbone pattern');
+  assert.equal(floorPhrase('no parquet'), 'a new plain floor');
+  assert.ok(!/parquet|herringbone/i.test(buildPrompt('kitchen', { floor: 'no parquet please oak' })));
+});
+
+test('QA #5 P3: a removed negation leaves no stray comma', () => {
+  assert.equal(floorPhrase('not parquet, oak'), `wide-plank oak ${TAIL}`);
+  assert.equal(floorPhrase('Oak, no parquet, matte'), `wide-plank oak, matte ${TAIL}`);
+  const pr = buildPrompt('kitchen', { floor: 'not parquet, oak' }, { catalogSlots: new Set(['floor']) });
+  assert.match(pr, /replace the entire existing floor with oak; /);
+  assert.ok(!/with [,;]|,\s*,|,\s*;/.test(pr), pr);
+});
