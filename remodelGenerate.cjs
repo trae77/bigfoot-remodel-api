@@ -354,6 +354,8 @@ function resolvedConfig() {
   const h = falRunHeaders('x');
   return {
     twoPass: twoPassOn(),
+    engine: require('./geminiEngine.cjs').engine(),
+    geminiKeySet: Boolean(require('./geminiEngine.cjs').getGeminiKey()),
     model: falModel().id,
     guidance: falGuidance(),
     floorGuidance: floorGuidance(),
@@ -436,7 +438,12 @@ function createRemodelGenerateHandler(deps) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      if (!getFalKey()) {
+      const gem = require('./geminiEngine.cjs');
+      const useGemini = gem.engine() === 'gemini';
+      if (useGemini && !gem.getGeminiKey()) {
+        return res.status(503).json({ error: 'Remodel generate is not configured', honesty: HONESTY });
+      }
+      if (!useGemini && !getFalKey()) {
         return res.status(503).json({
           error: 'Remodel generate is not configured (missing FAL_KEY)',
           honesty: HONESTY,
@@ -457,6 +464,30 @@ function createRemodelGenerateHandler(deps) {
           error: 'Session preview limit reached. Start a new browser session or try later.',
           remainingSessionGenerates: 0,
           honesty: HONESTY,
+        });
+      }
+
+      if (useGemini) {
+        // Same validated prompts/plan (deny-list, MAX_PROMPT_CHARS) and the same durable cap reservation (capGate) as fal.
+        let img = gem.parseDataUri(image_url);
+        for (const c of calls) {
+          img = await gem.callGemini({ prompt: c.prompt, image: img }, { fetchImpl: deps.fetchImpl });
+          budget.count += 1;
+          budget.spendUsd += gem.GEMINI_USD_PER_CALL;
+          budget.updatedAt = Date.now();
+          sessionSpend.set(sessionKey, budget);
+        }
+        const gid = deps.imageStore.put(img.buf, img.type);
+        const gsecret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
+        console.info('remodel_gemini', JSON.stringify({ passes: calls.length }));
+        return res.status(200).json({
+          afterImageUrl: absoluteImageUrl(store.signedImagePath(gsecret, gid)),
+          afterImageExpiresIn: store.URL_TTL_SEC_MAX,
+          remainingSessionGenerates: remainingGenerates(budget),
+          honesty: HONESTY,
+          provider: gem.GEMINI_MODEL,
+          seed: null,
+          projectId,
         });
       }
 
@@ -526,6 +557,12 @@ function createRemodelGenerateHandler(deps) {
         projectId,
       });
     } catch (e) {
+      if (e && e.code === 'MISSING_KEY' && e instanceof require('./geminiEngine.cjs').GeminiError) {
+        return res.status(503).json({ error: 'Remodel generate is not configured', honesty: HONESTY });
+      }
+      if (e && /^(GEMINI_|BAD_IMAGE)/.test(e.code || '')) {
+        return res.status(502).json({ error: 'Image service failed — try again later', honesty: HONESTY });
+      }
       if (e && e.code === 'MISSING_KEY') {
         return res.status(503).json({ error: 'Remodel generate is not configured (missing FAL_KEY)', honesty: HONESTY });
       }

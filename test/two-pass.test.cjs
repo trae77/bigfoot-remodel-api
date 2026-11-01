@@ -170,10 +170,10 @@ test('per-token allowance counts fal calls: a two-pass uses 2 of 3, the next two
 
 test('startup config line: resolved values, no secrets or URLs', () => {
   Object.assign(process.env, { FAL_KEY: 'sk-SECRET-fal', REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', PUBLIC_API_ORIGIN: 'https://api.example.test', REMODEL_FAL_MODEL: 'max', REMODEL_GUIDANCE: '4', REMODEL_FLOOR_GUIDANCE: '6' });
-  delete process.env.REMODEL_TWO_PASS; delete process.env.FAL_STORE_IO; delete process.env.FAL_MEDIA_EXPIRATION_SEC;
+  delete process.env.REMODEL_TWO_PASS; delete process.env.FAL_STORE_IO; delete process.env.FAL_MEDIA_EXPIRATION_SEC; delete process.env.GEMINI_API_KEY; delete process.env.REMODEL_ENGINE;
   const { resolvedConfig } = require('../remodelGenerate.cjs');
   const c = resolvedConfig();
-  assert.deepEqual(c, { twoPass: true, model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
+  assert.deepEqual(c, { twoPass: true, engine: 'fal', geminiKeySet: false, model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
   const line = JSON.stringify(c);
   for (const bad of ['SECRET', 'Tq7vR2', 'example.test', 'Key ']) assert.ok(!line.includes(bad), bad);
   process.env.REMODEL_TWO_PASS = '0'; delete process.env.PUBLIC_API_ORIGIN; process.env.FAL_MEDIA_EXPIRATION_SEC = '0';
