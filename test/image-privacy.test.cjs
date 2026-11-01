@@ -25,6 +25,8 @@ function mockFal(log, { imgHost = 'https://v3.fal.media/files/out.jpg', deleteOk
 
 async function boot(fetchImpl, imageStore, extra = {}) {
   process.env.REMODEL_TOKEN_SECRET = SECRET; process.env.FAL_KEY = 'fake-fal'; delete process.env.CORS_ORIGINS;
+  // These cover the payload-delete path, which only runs when payloads are stored (FAL_STORE_IO=1). The store-IO 0 skip is in tiers.test.cjs.
+  process.env.FAL_STORE_IO = '1';
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
   require('../remodelGenerate.cjs').sessionSpend.clear();
   const { createApp } = require('../remodelApi.cjs');

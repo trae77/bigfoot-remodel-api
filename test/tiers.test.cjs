@@ -173,9 +173,24 @@ async function captureLogs(fn) {
   return out;
 }
 
-test('confirmed delete logs fal_payload_delete_ok {id, files}; failure ALERT carries id; no URL or key', async () => {
+test('store-IO 0 (default): delete call is skipped with an info log carrying the id, even if delete would 403', async () => {
+  fresh(); const s = await start({ del: { ok: false, status: 403, json: async () => ({}) } });
+  try {
+    const logs = await captureLogs(async () => {
+      const tok = await s.token();
+      assert.equal((await s.req('/api/remodel/generate', { token: tok, body: { projectId: 1, room: 'kitchen', imageUrl: PNG } })).status, 200);
+    });
+    assert.equal(s.calls.filter((c) => c.kind === 'delete').length, 0, 'no delete call');
+    const line = logs.find((l) => l[1].startsWith('fal_payload_delete_skipped'));
+    assert.equal(line[0], 'info');
+    assert.deepEqual(JSON.parse(line[1].slice('fal_payload_delete_skipped '.length)), { id: RID, storeIo: '0' });
+    assert.ok(!logs.some((l) => /ALERT/.test(l[1])), 'no ALERT');
+  } finally { await s.close(); }
+});
+
+test('store-IO 1: confirmed delete logs fal_payload_delete_ok {id, files}; failure ALERT carries id; no URL or key', async () => {
   for (const [del, want] of [[undefined, 'fal_payload_delete_ok'], [{ ok: false, status: 403, json: async () => ({}) }, 'ALERT fal_payload_delete_failed']]) {
-    fresh(); const s = await start(del ? { del } : {});
+    fresh({ FAL_STORE_IO: '1' }); const s = await start(del ? { del } : {});
     try {
       const logs = await captureLogs(async () => {
         const tok = await s.token();

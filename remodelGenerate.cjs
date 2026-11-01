@@ -250,6 +250,7 @@ async function callFalKontext(input, opts = {}) {
   const rid = res.headers && res.headers.get ? res.headers.get('x-fal-request-id') : null;
   console.info('fal_run_retention', JSON.stringify(falRetentionLog(headers, rid)));
   if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
+  if (data && typeof data === 'object') Object.defineProperty(data, '__falStoreIo', { value: headers['X-Fal-Store-IO'] ?? null, enumerable: false });
   return data;
 }
 
@@ -313,6 +314,8 @@ function createRemodelGenerateHandler(deps) {
         setImmediate(() => {
           // Server-side only, for QA delete checks: fal request id and counts. No URL, no key. Never sent to the browser.
           const id = rid || null;
+          // With X-Fal-Store-IO: 0 fal keeps no request payload, so there is nothing to delete (the delete call 403s).
+          if (data.__falStoreIo === '0') { console.info('fal_payload_delete_skipped', JSON.stringify({ id, storeIo: '0' })); return; }
           store.deleteFalPayload(rid, key, fetchImpl).then((del) => {
             if (del.ok) { console.info('fal_payload_delete_ok', JSON.stringify({ id, files: del.total ?? null })); return; }
             console.error('ALERT fal_payload_delete_failed', JSON.stringify({ id, status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
