@@ -172,6 +172,17 @@ function createApp(opts = {}) {
       if (!u) return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
       return res.status(429).json({ error: 'Monthly preview limit reached. Try again next month.', honesty: HONESTY });
     }
+    // Failover retry: one more call, reserved atomically on every count cap and the dollar cap before it goes out.
+    req.remodelReserveExtra = async (usd) => {
+      try {
+        const a = await caps.reserveAll(capStore, capItems, 1);
+        if (!a.ok) return false;
+        const b = await caps.reserveAll(capStore, [[`m:${month}:usd_cents`, caps.monthlyUsdCapCents(), 'usd']], Math.ceil(usd * 100 - 1e-9));
+        if (!b.ok) { await caps.releaseAll(capStore, capKeys, 1); return false; }
+        if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), 1)) return false;
+        return true;
+      } catch (_e) { return false; }
+    };
     if (p && !tokenUses.take(p, cfg.perTokenMax, Date.now(), n)) {
       // Cap slots stay reserved (fail-safe for spend).
       return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });

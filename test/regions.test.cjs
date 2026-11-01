@@ -21,7 +21,7 @@ function stubFal(runs, { failPass = 0 } = {}) {
     throw new Error('unexpected outbound ' + url);
   };
 }
-const ENV_KEYS = ['REMODEL_REGIONS', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_TWO_PASS', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_FAL_MODEL'];
+const ENV_KEYS = ['REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_ENGINE_TIMEOUT_MS', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_REGIONS', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_TWO_PASS', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_FAL_MODEL'];
 async function boot(fetchImpl, env = {}) {
   for (const k of ENV_KEYS) delete process.env[k];
   Object.assign(process.env, { REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', FAL_KEY: 'fake-fal', REMODEL_REGIONS: '1' }, env);
@@ -235,4 +235,103 @@ test('unknown engine id fails safe to kontext; engine interface is pluggable', (
   assert.equal(e.engineId(), 'kontext');
   e.register('gemini', { usesMask: false, available: () => true, model: () => 'mock', usdPerCall: () => 0.01, run: async () => ({ images: [{ url: 'x' }] }) });
   assert.equal(e.engineId(), 'gemini');
+});
+
+// ---- Declutter pre-pass + failover (mocked) ----
+function stubFal2(runs, { failUrl = null, failTimes = 1, hang = false } = {}) {
+  let failed = 0;
+  return async (url, init = {}) => {
+    url = String(url);
+    if (url.startsWith('https://fal.run/')) {
+      runs.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+      const n = runs.length;
+      if (failUrl && url.includes(failUrl) && failed < failTimes) { failed++; if (hang) return new Promise(() => {}); return { ok: false, status: 500, headers: hdrs({}), text: async () => '{}' }; }
+      return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': `req-${n}` }), text: async () => JSON.stringify({ images: [{ url: `https://v3.fal.media/files/p${n}.jpg` }] }) };
+    }
+    if (url.includes('fal.media')) return { ok: true, status: 200, headers: hdrs({ 'content-type': 'image/jpeg' }), arrayBuffer: async () => JPG };
+    throw new Error('unexpected outbound ' + url);
+  };
+}
+
+test('region prompts keep appliances/objects outside the target regions', () => {
+  const { planRegions } = require('../regionTargeting.cjs');
+  for (const c of planRegions('kitchen', ALL)) assert.match(c.prompt, /Keep all appliances and objects not in the target regions unchanged/);
+});
+
+test('declutter OFF by default; ON prepends one empty-the-room call (regions on: 4 calls, all counted)', async () => {
+  const runs = []; const s = await boot(stubFal2(runs), { REMODEL_DECLUTTER: '1', REMODEL_PER_IP_DAILY: '4', REMODEL_REQUESTS_PER_TOKEN: '5' });
+  try {
+    const r = await gen(s.base);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(runs.length, 4);
+    assert.match(runs[0].body.prompt, /remove all free-standing furniture/i);
+    assert.match(runs[0].body.prompt, /dining table, chairs/);
+    assert.match(runs[0].body.prompt, /Keep the walls, windows, doors, cabinets, built-in appliances/);
+    assert.match(runs[1].body.prompt, /Change only the floor/);
+    assert.equal(runs[1].body.image_url, 'https://v3.fal.media/files/p1.jpg');
+    // per-IP 4 used: next request refused before any call
+    assert.equal((await gen(s.base, { floor: 'oak' })).status, 429); assert.equal(runs.length, 4);
+  } finally { await s.close(); delete process.env.REMODEL_DECLUTTER; }
+  delete process.env.REMODEL_DECLUTTER;
+  delete require.cache[require.resolve('../remodelGenerate.cjs')];
+  assert.equal(require('../remodelGenerate.cjs').declutterOn(), false);
+});
+
+test('declutter with regions OFF: 1 + legacy plan (two-pass = 3 calls); dollar cap reserves all of them', async () => {
+  const runs = []; const s = await boot(stubFal2(runs), { REMODEL_REGIONS: '0', REMODEL_DECLUTTER: '1', REMODEL_MONTHLY_USD_CAP: '0.08' });
+  try {
+    const r = await gen(s.base);
+    assert.equal(r.status, 429); assert.equal(runs.length, 0); // 3 x 0.04 > 0.08: refused up front
+  } finally { await s.close(); delete process.env.REMODEL_MONTHLY_USD_CAP; }
+  const runs2 = []; const s2 = await boot(stubFal2(runs2), { REMODEL_REGIONS: '0', REMODEL_DECLUTTER: '1' });
+  try { assert.equal((await gen(s2.base)).status, 200); assert.equal(runs2.length, 3); assert.match(runs2[0].body.prompt, /Remove every loose item/); } finally { await s2.close(); delete process.env.REMODEL_DECLUTTER; }
+});
+
+test('per-render ceiling refuses up front (no call) when planned calls exceed REMODEL_RENDER_MAX_USD', async () => {
+  const runs = []; const s = await boot(stubFal2(runs), { REMODEL_DECLUTTER: '1', REMODEL_RENDER_MAX_USD: '0.12', REMODEL_REQUESTS_PER_TOKEN: '5' });
+  try { const r = await gen(s.base); assert.equal(r.status, 429); assert.equal(runs.length, 0); } finally { await s.close(); for (const k of ['REMODEL_DECLUTTER', 'REMODEL_RENDER_MAX_USD']) delete process.env[k]; }
+});
+
+test('failover OFF by default and disabled without REMODEL_QWEN_USD (or above 0.16): kontext error is a plain 502', async () => {
+  for (const env of [{}, { REMODEL_FAILOVER: '1' }, { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.2' }]) {
+    const runs = []; const s = await boot(stubFal2(runs, { failUrl: 'kontext' }), env);
+    try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 502); assert.equal(runs.length, 1); assert.ok(!runs.some((x) => x.url.includes('qwen'))); } finally { await s.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD']) delete process.env[k]; }
+  }
+});
+
+test('failover ON: kontext error -> one qwen retry with structure guard + region mask, Store-IO 0/TTL, counted on caps', async () => {
+  const runs = []; const s = await boot(stubFal2(runs, { failUrl: 'kontext' }), { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.05', REMODEL_PER_IP_DAILY: '3' });
+  try {
+    const r = await gen(s.base, { counters: 'granite' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(runs.length, 2);
+    assert.match(runs[0].url, /kontext$/); assert.ok(!('mask_url' in runs[0].body));
+    assert.equal(runs[1].url, 'https://fal.run/fal-ai/qwen-image-edit/inpaint');
+    assert.match(runs[1].body.prompt, /^Keep the exact layout, camera angle, walls and windows/);
+    assert.match(runs[1].body.mask_url, /^data:image\/png;base64,/);
+    assert.match(runs[1].body.negative_prompt, /table/);
+    assert.equal(runs[1].headers['X-Fal-Store-IO'], '0');
+    assert.deepEqual(JSON.parse(runs[1].headers['X-Fal-Object-Lifecycle-Preference']), { expiration_duration_seconds: 3600 });
+    // per-IP 3: 1 planned + 1 failover used 2; a 1-call render fits, then the next is refused with no call
+    assert.equal((await gen(s.base, { counters: 'granite' })).status, 200);
+    const n = runs.length;
+    assert.equal((await gen(s.base, { counters: 'granite' })).status, 429); assert.equal(runs.length, n);
+  } finally { await s.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD']) delete process.env[k]; }
+});
+
+test('failover retry is refused (no qwen call) when the cap has no room left for it', async () => {
+  const runs = []; const s = await boot(stubFal2(runs, { failUrl: 'kontext' }), { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.05', REMODEL_PER_IP_DAILY: '1' });
+  try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 502); assert.equal(runs.length, 1); } finally { await s.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD']) delete process.env[k]; }
+  const runs2 = []; const s2 = await boot(stubFal2(runs2, { failUrl: 'kontext' }), { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.05', REMODEL_MONTHLY_USD_CAP: '0.04' });
+  try { const r = await gen(s2.base, { counters: 'granite' }); assert.equal(r.status, 502); assert.equal(runs2.length, 1); } finally { await s2.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_MONTHLY_USD_CAP']) delete process.env[k]; }
+});
+
+test('failover respects the per-render ceiling: retry that would exceed it is not sent', async () => {
+  const runs = []; const s = await boot(stubFal2(runs, { failUrl: 'kontext' }), { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.16', REMODEL_RENDER_MAX_USD: '0.12' });
+  try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 502); assert.equal(runs.length, 1); } finally { await s.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD']) delete process.env[k]; }
+});
+
+test('failover on timeout: hung kontext call -> qwen retry after REMODEL_ENGINE_TIMEOUT_MS', async () => {
+  const runs = []; const s = await boot(stubFal2(runs, { failUrl: 'kontext', hang: true }), { REMODEL_FAILOVER: '1', REMODEL_QWEN_USD: '0.05', REMODEL_ENGINE_TIMEOUT_MS: '5000' });
+  try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 200); assert.equal(runs.length, 2); assert.match(runs[1].url, /qwen/); } finally { await s.close(); for (const k of ['REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_ENGINE_TIMEOUT_MS']) delete process.env[k]; }
 });

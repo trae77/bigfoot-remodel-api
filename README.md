@@ -29,3 +29,25 @@ Each prompt edits one region only, excludes tables, chairs, stools and other fur
 an anti-stripe guard. Engines (`engines.cjs`): `kontext` (default, prompt-scoped, no mask) and `fill`
 (fal FLUX pro fill with a free heuristic band mask; only enabled when `REMODEL_FILL_USD` is set from fal's price page).
 Every call is reserved in the D1 caps before the first one goes out. Max 3 calls per render: $0.12 on Kontext pro, $0.24 on Kontext max ($0.08/call), and at most $0.48 on fill (REMODEL_FILL_USD is hard-capped at $0.16/call; above that fill is refused with 503). Regions OFF always uses Kontext. A monthly dollar cap (REMODEL_MONTHLY_USD_CAP, default $10) is reserved in D1 per call before any fal call.
+
+### Declutter pre-pass (REMODEL_DECLUTTER, default OFF)
+One extra call first: removes loose items on the counters and free-standing furniture in the middle of the room (dining table, chairs, stools, rugs).
+Walls, windows, cabinets and appliances stay. The remodel passes then run on the cleared image. The call is reserved up front in the D1 count caps and the monthly dollar cap.
+
+### Failover (REMODEL_FAILOVER, default OFF)
+Kontext runs first. If a call errors or times out (REMODEL_ENGINE_TIMEOUT_MS, default 60000), that call is retried once on fal Qwen-Image-Edit inpaint.
+The retry uses a structure guard prompt and the region mask. It only works when REMODEL_QWEN_USD is set (0 < x <= 0.16), from fal's price page; no price is hard-coded.
+Before the retry goes out, it is reserved atomically on the monthly, daily and per-IP caps, the per-token allowance, the session limit and the monthly dollar cap. The failed Kontext attempt is charged too, since it may have billed.
+
+### Per-render ceiling (REMODEL_RENDER_MAX_USD, default 0.50 USD, max 1)
+The planned calls are checked before the first call: a render that cannot fit is refused (429) with no call. No failover retry is sent if it would cross the ceiling.
+Note: the per-token allowance (REMODEL_REQUESTS_PER_TOKEN, default 3) must be at least the call count, or multi-call renders get a 401. Use 4 with declutter + regions, or 8 with failover too.
+
+### Worst-case calls and dollars per render (Kontext pro 0.04, Kontext max 0.08, fill/qwen at most 0.16 per call)
+| Flags | Calls | Pro | Max | Fill (at 0.16) |
+|---|---|---|---|---|
+| all OFF (two-pass) | 2 | 0.08 | 0.16 | n/a |
+| DECLUTTER | 3 | 0.12 | 0.24 | n/a |
+| REGIONS | 3 | 0.12 | 0.24 | 0.48 |
+| REGIONS + DECLUTTER | 4 | 0.16 | 0.32 | 0.64, refused at the 0.50 ceiling |
+| + FAILOVER (qwen at 0.16) | up to 2x calls | capped at the 0.50 ceiling | capped at 0.50 | fill has no failover |

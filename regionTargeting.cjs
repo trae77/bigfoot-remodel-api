@@ -16,6 +16,7 @@ const RIDE_ALONG = ['walls', 'backsplash'];
 
 // Things the model must never restyle. The dining table top was being turned into countertop.
 const EXCLUDE = 'Do not change any table, dining table, table top, chairs, stools, benches, rugs, decor or other furniture: keep their exact shape, material and color';
+const KEEP_OTHERS = 'Keep all appliances and objects not in the target regions unchanged';
 const NO_ADD = 'Do not add people, text, logos, new furniture or new objects';
 // Floor stripes in render 3: plain, uniform, no painted-on lines.
 const FLOOR_GUARD = 'one uniform material across the whole floor, no stripes, no painted lines, no banding, no repeating light-dark bars, no rug, seams only where planks or tiles meet';
@@ -61,7 +62,7 @@ function planRegions(room, finishes, phrase = (_r, v) => String(v)) {
     if (p.region === 'counters') lines.push('A table in the room is not a countertop: leave its top exactly as it is.');
     for (const [k, v] of p.extras) lines.push(`Also change ${k === 'walls' ? 'the wall paint' : 'the backsplash'} to ${v}.`);
     lines.push(`Keep ${spec ? spec.keep : 'floor, cabinets, countertops, appliances, windows, table, chairs and camera angle'} exactly as in the photo.`);
-    lines.push(`${EXCLUDE}. ${NO_ADD}.`);
+    lines.push(`${KEEP_OTHERS}. ${EXCLUDE}. ${NO_ADD}.`);
     lines.push('Output one photoreal still.');
     return { region: p.region, prompt: lines.join('\n'), negative: spec ? spec.negative.slice() : [], extras: p.extras.map(([k]) => k) };
   });
@@ -71,7 +72,28 @@ function planRegions(room, finishes, phrase = (_r, v) => String(v)) {
 // Bands are fractions of image height for a typical eye-level kitchen photo. Crude by design: an
 // engine that segments for itself (Kontext, Gemini) ignores masks. Tables sit mostly in the middle band,
 // so the counters band is narrow and the floor band starts low.
-const MASK_BANDS = { floor: [0.72, 1.0], cabinets: [0.15, 0.85], counters: [0.5, 0.6], finishes: [0, 1] };
+const MASK_BANDS = { declutter: [0.3, 1.0], floor: [0.72, 1.0], cabinets: [0.15, 0.85], counters: [0.5, 0.6], finishes: [0, 1] };
+
+// ---- 'Empty the room' pre-pass (REMODEL_DECLUTTER). Removes loose items and free-standing furniture first,
+// so the region passes never see a table they could turn into countertop. Structure is kept.
+const DECLUTTER_NEGATIVE = ['walls moved', 'windows changed', 'cabinets removed', 'appliances removed', 'new objects added', 'floor pattern changed'];
+function declutterCall(room) {
+  return {
+    region: 'declutter',
+    prompt: [
+      `Edit this photo of a ${room || 'kitchen'}.`,
+      'Remove every loose item from the countertops and remove all free-standing furniture from the middle of the room, especially any dining table, chairs, stools, benches and rugs.',
+      'Fill the cleared areas with the existing floor and countertop surfaces so they look naturally empty.',
+      'Keep the walls, windows, doors, cabinets, built-in appliances, sink, lighting, room layout and camera angle exactly as in the photo.',
+      'Do not change any colors or materials. Do not add people, text, logos or new objects.',
+      'Output one photoreal still.',
+    ].join('\n'),
+    negative: DECLUTTER_NEGATIVE.slice(),
+  };
+}
+
+// Prefix for the failover engine (Qwen): it drifts layout more than Kontext, so the structure is pinned first.
+const STRUCTURE_GUARD = 'Keep the exact layout, camera angle, walls and windows of this photo. Edit only inside the masked area.';
 
 function crc32(buf) {
   let c = ~0; for (let i = 0; i < buf.length; i++) { c ^= buf[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); }
@@ -95,4 +117,4 @@ function bandMask(w, h, [top, bottom]) {
 }
 function heuristicMask(region, w, h) { return bandMask(w, h, MASK_BANDS[region] || MASK_BANDS.finishes); }
 
-module.exports = { REGION_ORDER, RIDE_ALONG, REGION_SPEC, EXCLUDE, FLOOR_GUARD, MASK_BANDS, planRegions, bandMask, heuristicMask, crc32 };
+module.exports = { declutterCall, DECLUTTER_NEGATIVE, STRUCTURE_GUARD, KEEP_OTHERS, REGION_ORDER, RIDE_ALONG, REGION_SPEC, EXCLUDE, FLOOR_GUARD, MASK_BANDS, planRegions, bandMask, heuristicMask, crc32 };
