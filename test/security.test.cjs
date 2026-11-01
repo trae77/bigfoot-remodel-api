@@ -318,11 +318,11 @@ test('BF #46 P2-1: valid token + generate body {} -> 400 before caps and fal (co
   setEnv({ FAL_KEY: 'fake-fal', REMODEL_TOKEN_SECRET: SECRET });
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
   const sec = require('../security.cjs');
-  const genCounter = sec.createDailyCounter();
-  let incs = 0; const realInc = genCounter.inc.bind(genCounter); genCounter.inc = (...a) => { incs++; return realInc(...a); };
+  const genCounter = require('../capStore.cjs').createMemoryCapStore();
+  let incs = 0; const realRes = genCounter.reserve.bind(genCounter); genCounter.reserve = (...a) => { incs++; return realRes(...a); };
   const urls = []; const spyFetch = async (u, i) => { urls.push(String(u)); return fakeFetch(u, i); };
   const { createApp } = require('../remodelApi.cjs');
-  const server = http.createServer(createApp({ fetchImpl: spyFetch, genCounter }));
+  const server = http.createServer(createApp({ fetchImpl: spyFetch, capStore: genCounter }));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {

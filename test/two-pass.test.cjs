@@ -105,8 +105,8 @@ test('inputs under 1024px on the long side log a warning (no upscaling)', () => 
 });
 
 test('PUNCH P2: per-IP daily cap counts fal calls (two-pass = 2), checked before any call', async () => {
-  const runs = []; const genCounter = require('../security.cjs').createDailyCounter();
-  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '3', REMODEL_GLOBAL_DAILY: '100' }, { genCounter });
+  const runs = []; const genCounter = require('../capStore.cjs').createMemoryCapStore();
+  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '3', REMODEL_GLOBAL_DAILY: '100' }, { capStore: genCounter });
   try {
     assert.equal((await gen(s.base)).status, 200); assert.equal(runs.length, 2);
     assert.equal(genCounter.get('global'), 2);
@@ -119,8 +119,8 @@ test('PUNCH P2: per-IP daily cap counts fal calls (two-pass = 2), checked before
 });
 
 test('PUNCH P2: global daily cap counts fal calls too', async () => {
-  const runs = []; const genCounter = require('../security.cjs').createDailyCounter();
-  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '100', REMODEL_GLOBAL_DAILY: '1' }, { genCounter });
+  const runs = []; const genCounter = require('../capStore.cjs').createMemoryCapStore();
+  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '100', REMODEL_GLOBAL_DAILY: '1' }, { capStore: genCounter });
   try {
     assert.equal((await gen(s.base)).status, 429); assert.equal(runs.length, 0); assert.equal(genCounter.get('global'), 0);
   } finally { await s.close(); }
@@ -170,10 +170,10 @@ test('per-token allowance counts fal calls: a two-pass uses 2 of 3, the next two
 
 test('startup config line: resolved values, no secrets or URLs', () => {
   Object.assign(process.env, { FAL_KEY: 'sk-SECRET-fal', REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', PUBLIC_API_ORIGIN: 'https://api.example.test', REMODEL_FAL_MODEL: 'max', REMODEL_GUIDANCE: '4', REMODEL_FLOOR_GUIDANCE: '6' });
-  delete process.env.REMODEL_TWO_PASS; delete process.env.FAL_STORE_IO; delete process.env.FAL_MEDIA_EXPIRATION_SEC;
+  delete process.env.REMODEL_TWO_PASS; delete process.env.FAL_STORE_IO; delete process.env.FAL_MEDIA_EXPIRATION_SEC; delete process.env.GEMINI_API_KEY; delete process.env.REMODEL_ENGINE;
   const { resolvedConfig } = require('../remodelGenerate.cjs');
   const c = resolvedConfig();
-  assert.deepEqual(c, { twoPass: true, model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
+  assert.deepEqual(c, { twoPass: true, engine: 'fal', geminiKeySet: false, model: 'fal-ai/flux-pro/kontext/max', guidance: 4, floorGuidance: 6, storeIo: '0', mediaTtlSec: 3600, publicApiOriginSet: true });
   const line = JSON.stringify(c);
   for (const bad of ['SECRET', 'Tq7vR2', 'example.test', 'Key ']) assert.ok(!line.includes(bad), bad);
   process.env.REMODEL_TWO_PASS = '0'; delete process.env.PUBLIC_API_ORIGIN; process.env.FAL_MEDIA_EXPIRATION_SEC = '0';
