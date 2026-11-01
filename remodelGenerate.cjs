@@ -78,6 +78,18 @@ function validateGenerateBody(body) {
   return { projectId, room, finishes, image_url: img.image_url, prompt };
 }
 
+const PLANK_TAIL = 'hardwood flooring, long straight planks, no parquet or herringbone';
+const WOOD_RE = /\b(oak|walnut|maple|hickory|cherry|ash|birch|pine|teak|acacia|hardwood|wood)\b/i;
+const NOT_WOOD_RE = /\b(tile|vinyl|lvp|laminate|carpet|concrete|stone|marble|porcelain|ceramic|epoxy)\b/i;
+/** Wood floor choices become explicit wide-plank wording so the model doesn't drift to parquet or herringbone. */
+function floorPhrase(v) {
+  const raw = String(v).trim();
+  if (!WOOD_RE.test(raw) || NOT_WOOD_RE.test(raw)) return raw;
+  if (/\blight\b/i.test(raw) && /\boak\b/i.test(raw)) return `wide-plank light oak ${PLANK_TAIL}`;
+  const desc = raw.replace(/\b(hardwood|wood|floor(?:ing|s)?|planks?|wide-plank|wide|parquet|herringbone)\b/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  return `wide-plank ${desc ? desc + ' ' : ''}${PLANK_TAIL}`;
+}
+
 function buildPrompt(room, finishes) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const line = (v) => {
@@ -89,7 +101,7 @@ function buildPrompt(room, finishes) {
     '',
     `Room type: ${room || 'kitchen'}.`,
     'Change only these finishes:',
-    `- Floor: ${line(f.floor)}`,
+    `- Floor: ${f.floor == null || f.floor === '' ? 'unchanged' : floorPhrase(f.floor)}`,
     `- Cabinet faces: ${line(f.cabinets)}`,
     `- Countertops: ${line(f.counters)}`,
     `- Wall paint/tile: ${line(f.walls)}`,
@@ -272,6 +284,7 @@ module.exports = {
   HONESTY,
   getFalKey,
   buildPrompt,
+  floorPhrase,
   validateGenerateBody,
   validateImage,
   MAX_PROMPT_CHARS,
