@@ -9,22 +9,26 @@ const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]);
 const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
 const RID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
-function mockFal(log, { imgHost = 'https://v3.fal.media/files/out.jpg', deleteOk = true } = {}) {
+function mockFal(log, { imgHost = 'https://v3.fal.media/files/out.jpg', deleteOk = true, deleteDelayMs = 0, deleteHang = false } = {}) {
   return async (url, init = {}) => {
     url = String(url); log.push((init.method || 'GET') + ' ' + url);
     if (url.startsWith('https://fal.run/')) return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': RID }), text: async () => JSON.stringify({ images: [{ url: imgHost }], seed: 7 }) };
     if (url.includes('fal.media') || url.startsWith('https://evil')) return { ok: true, status: 200, headers: hdrs({ 'content-type': 'image/jpeg' }), arrayBuffer: async () => JPG };
+    if (url.startsWith('https://api.fal.ai/') && (deleteHang || deleteDelayMs)) {
+      await new Promise((res, rej) => { const t = deleteHang ? null : setTimeout(res, deleteDelayMs);
+        if (init.signal) init.signal.addEventListener('abort', () => { clearTimeout(t); rej(init.signal.reason); }); });
+    }
     if (url.startsWith('https://api.fal.ai/')) return { ok: deleteOk, status: deleteOk ? 200 : 403, json: async () => ({ cdn_delete_results: [{ link: 'https://v3.fal.media/files/out.jpg', exception: null }] }) };
     throw new Error('unexpected ' + url);
   };
 }
 
-async function boot(fetchImpl, imageStore) {
+async function boot(fetchImpl, imageStore, extra = {}) {
   process.env.REMODEL_TOKEN_SECRET = SECRET; process.env.FAL_KEY = 'fake-fal'; delete process.env.CORS_ORIGINS;
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
   require('../remodelGenerate.cjs').sessionSpend.clear();
   const { createApp } = require('../remodelApi.cjs');
-  const server = http.createServer(createApp({ fetchImpl, imageStore }));
+  const server = http.createServer(createApp({ fetchImpl, imageStore, ...extra }));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
 }
@@ -170,8 +174,48 @@ test('fal delete failure raises ALERT log with no URL, key or request id', async
   try {
     const g = await generate(s.base);
     assert.equal(g.status, 200);
+    await new Promise((r) => setTimeout(r, 50));
     const alert = errs.find((e) => e.includes('ALERT fal_payload_delete_failed'));
     assert.ok(alert, 'alert emitted');
     assert.ok(!/fal\.media|fake-fal/.test(alert) && !alert.includes(RID));
   } finally { console.error = orig; await s.close(); }
+});
+
+test('P2-1 slow 3s fal delete does not delay the client response', async () => {
+  const log = []; const s = await boot(mockFal(log, { deleteDelayMs: 2900 }));
+  try {
+    const t0 = Date.now(); const g = await generate(s.base); const ms = Date.now() - t0;
+    assert.equal(g.status, 200); assert.ok(ms < 1000, `response took ${ms}ms`);
+    await new Promise((r) => setTimeout(r, 3000));
+  } finally { await s.close(); }
+});
+
+test('P2-1 hung fal delete times out (~3s) and ALERTs with reason timeout, no URL/key/id', async () => {
+  const log = []; const s = await boot(mockFal(log, { deleteHang: true }));
+  const orig = console.error; const errs = []; console.error = (...a) => errs.push(a.join(' '));
+  try {
+    const t0 = Date.now(); const g = await generate(s.base);
+    assert.equal(g.status, 200); assert.ok(Date.now() - t0 < 1000);
+    await new Promise((r) => setTimeout(r, 3400));
+    const alert = errs.find((e) => e.includes('ALERT fal_payload_delete_failed'));
+    assert.ok(alert && alert.includes('"timeout"'), 'timeout alert');
+    assert.ok(!/fal\.media|fake-fal/.test(alert) && !alert.includes(RID));
+  } finally { console.error = orig; await s.close(); }
+});
+
+test('P3-2 rejecting async onFalDeleteFail hook is caught (no unhandledRejection)', async () => {
+  const log = []; let called = 0; const unhandled = []; const h = (e) => unhandled.push(e);
+  process.on('unhandledRejection', h);
+  const s = await boot(mockFal(log, { deleteOk: false }), undefined, { onFalDeleteFail: async () => { called++; throw new Error('hook boom'); } });
+  const orig = console.error; console.error = () => {};
+  try {
+    const g = await generate(s.base); assert.equal(g.status, 200);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(called, 1); assert.equal(unhandled.length, 0);
+  } finally { console.error = orig; process.off('unhandledRejection', h); await s.close(); }
+});
+
+test('image download has a timeout signal', async () => {
+  let sig; await store.fetchFalImage('https://v3.fal.media/files/x.jpg', async (u, i) => { sig = i.signal; return { ok: true, status: 200, headers: hdrs({ 'content-type': 'image/jpeg' }), arrayBuffer: async () => JPG }; }).catch(() => {});
+  assert.ok(sig instanceof AbortSignal);
 });

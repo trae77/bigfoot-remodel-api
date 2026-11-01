@@ -254,12 +254,16 @@ function createRemodelGenerateHandler(deps) {
       try {
         stored = await store.fetchFalImage(falUrl, fetchImpl);
       } finally {
-        const del = await store.deleteFalPayload(data.__falRequestId, getFalKey(), fetchImpl);
-        if (!del.ok) {
-          // No URL, key or request id in the log. Alert hook is optional (e.g. a webhook set in env).
-          console.error('ALERT fal_payload_delete_failed', JSON.stringify({ status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
-          if (typeof deps.onFalDeleteFail === 'function') { try { deps.onFalDeleteFail(del); } catch {} }
-        }
+        // Never block the client on fal's delete: run it after the response is sent (capped at 3 s in imageStore).
+        const rid = data.__falRequestId; const key = getFalKey();
+        setImmediate(() => {
+          store.deleteFalPayload(rid, key, fetchImpl).then((del) => {
+            if (del.ok) return;
+            // No URL, key or request id in the log.
+            console.error('ALERT fal_payload_delete_failed', JSON.stringify({ status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
+            if (typeof deps.onFalDeleteFail === 'function') Promise.resolve().then(() => deps.onFalDeleteFail(del)).catch(() => {});
+          }).catch(() => console.error('ALERT fal_payload_delete_failed', JSON.stringify({ reason: 'exception' })));
+        });
       }
       const id = deps.imageStore.put(stored.buf, stored.type);
       const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;

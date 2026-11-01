@@ -12,6 +12,14 @@ test('200 with a per-file exception -> not ok, counted', async () => {
   const r = await deleteFalPayload(RID, 'k', resp(200, { cdn_delete_results: [{ link: 'a', exception: null }, { link: 'b', exception: 'denied' }] }));
   assert.equal(r.ok, false); assert.equal(r.failed, 1); assert.equal(r.total, 2);
 });
+test('P3-1 200 with empty cdn_delete_results [] -> not ok', async () => {
+  const r = await deleteFalPayload(RID, 'k', resp(200, { cdn_delete_results: [] }));
+  assert.equal(r.ok, false); assert.equal(r.reason, 'no-results');
+});
+test('delete passes an AbortSignal; abort maps to reason timeout', async () => {
+  const r = await deleteFalPayload(RID, 'k', async (u, i) => { assert.ok(i.signal instanceof AbortSignal); throw Object.assign(new Error('t'), { name: 'TimeoutError' }); });
+  assert.deepEqual(r, { ok: false, reason: 'timeout' });
+});
 test('200 without cdn_delete_results -> not ok', async () => {
   const r = await deleteFalPayload(RID, 'k', resp(200, {}));
   assert.equal(r.ok, false); assert.equal(r.reason, 'no-results');

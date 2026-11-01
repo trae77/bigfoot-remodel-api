@@ -161,6 +161,7 @@ function createApp(opts = {}) {
       getClientFromToken: async (req) => req.remodelClient || null,
       ownerTokens: new Set(),
       fetchImpl: opts.fetchImpl,
+      onFalDeleteFail: opts.onFalDeleteFail,
       imageStore,
     })
   );

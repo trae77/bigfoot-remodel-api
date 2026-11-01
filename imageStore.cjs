@@ -77,10 +77,12 @@ async function readCapped(r, max) {
 }
 
 /** Download fal output bytes server-side. Only https fal.media hosts; bounded size; image types only. */
+const FETCH_TIMEOUT_MS = 15000;
+const DELETE_TIMEOUT_MS = 3000;
 async function fetchFalImage(url, fetchImpl) {
   let u; try { u = new URL(url); } catch { throw Object.assign(new Error('bad fal url'), { code: 'FAL_FETCH' }); }
   if (u.protocol !== 'https:' || !FAL_HOST_RE.test(u.hostname)) throw Object.assign(new Error('fal url host not allowed'), { code: 'FAL_FETCH' });
-  const r = await fetchImpl(u.toString(), { method: 'GET', redirect: 'error' });
+  const r = await fetchImpl(u.toString(), { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) throw Object.assign(new Error('fal image fetch failed'), { code: 'FAL_FETCH' });
   const type = String((r.headers && r.headers.get && r.headers.get('content-type')) || '').split(';')[0].trim();
   if (!TYPES.has(type)) throw Object.assign(new Error('fal image type not allowed'), { code: 'FAL_FETCH' });
@@ -97,16 +99,16 @@ async function deleteFalPayload(requestId, key, fetchImpl) {
   if (!requestId || !/^[0-9a-f-]{36}$/i.test(requestId)) return { ok: false, reason: 'no-request-id' };
   try {
     const r = await fetchImpl(`https://api.fal.ai/v1/models/requests/${requestId}/payloads`, {
-      method: 'DELETE', headers: { Authorization: `Key ${key}`, 'Idempotency-Key': requestId },
+      method: 'DELETE', signal: AbortSignal.timeout(DELETE_TIMEOUT_MS), headers: { Authorization: `Key ${key}`, 'Idempotency-Key': requestId },
     });
     if (!r.ok) return { ok: false, status: r.status };
     // 200 can still carry per-file failures: fal returns cdn_delete_results[].exception.
     let body = null; try { body = await r.json(); } catch { return { ok: false, status: r.status, reason: 'bad-body' }; }
     const res = Array.isArray(body && body.cdn_delete_results) ? body.cdn_delete_results : null;
-    if (!res) return { ok: false, status: r.status, reason: 'no-results' };
+    if (!res || res.length === 0) return { ok: false, status: r.status, reason: 'no-results' };
     const failed = res.filter((x) => x && x.exception != null).length;
     return { ok: failed === 0, status: r.status, failed, total: res.length };
-  } catch { return { ok: false, reason: 'network' }; }
+  } catch (e) { return { ok: false, reason: e && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'timeout' : 'network' }; }
 }
 
-module.exports = { magicMatches, readCapped, MAX_IMAGE_BYTES, createImageStore, signedImagePath, verifyImageSig, fetchFalImage, deleteFalPayload, URL_TTL_SEC_MAX, MAX_RETENTION_MS, FAL_HOST_RE };
+module.exports = { FETCH_TIMEOUT_MS, DELETE_TIMEOUT_MS, magicMatches, readCapped, MAX_IMAGE_BYTES, createImageStore, signedImagePath, verifyImageSig, fetchFalImage, deleteFalPayload, URL_TTL_SEC_MAX, MAX_RETENTION_MS, FAL_HOST_RE };
