@@ -305,6 +305,8 @@ function planCalls(v) {
 }
 
 function sessionKeyFromReq(req) {
+  // All bypass renders share ONE session budget (MAX_SESSION_SPEND_USD), whatever headers they send.
+  if (req.remodelBypass) return 'test-bypass';
   const hdr = (req.headers['x-remodel-session'] || '').toString().trim();
   if (hdr && hdr.length <= 128) return `hdr:${hdr}`;
   const auth = (req.headers.authorization || '').toString();

@@ -38,7 +38,29 @@ function getConfig() {
     // Global hard cap per calendar month (UTC), counted in fal calls like the daily caps. Env-only; no client override.
     globalMonthly: intEnv('REMODEL_GLOBAL_MONTHLY', 120),
     perTokenMax: intEnv('REMODEL_REQUESTS_PER_TOKEN', MAX_REQUESTS_PER_TOKEN),
+    testToken: testTokenFromEnv(),
+    // Per-render $ ceiling, checked before any reservation or fal call.
+    renderMaxUsd: Number.isFinite(Number.parseFloat(process.env.REMODEL_RENDER_MAX_USD)) ? Number.parseFloat(process.env.REMODEL_RENDER_MAX_USD) : 0.5,
   };
+}
+
+/**
+ * Test bypass secret (CEO decision): lets ONE operator proof render reach the live API without an
+ * Origin/IP-bound session token. Disabled when REMODEL_TEST_TOKEN is unset, empty, or weak.
+ * Never log, echo, or put this value in errors or URLs.
+ */
+const TEST_TOKEN_HEADER = 'x-remodel-test-token';
+function testTokenFromEnv(env = process.env) {
+  const t = (env.REMODEL_TEST_TOKEN || '').trim();
+  return isStrongSecret(t) ? t : '';
+}
+/** Length-safe constant-time compare via HMAC digests (equal length always), then timingSafeEqual. */
+function testTokenMatches(expected, given) {
+  if (!expected || typeof given !== 'string' || !given) return false;
+  const k = crypto.randomBytes(32);
+  const a = crypto.createHmac('sha256', k).update(expected).digest();
+  const b = crypto.createHmac('sha256', k).update(given).digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 function clientIp(req) {
@@ -142,6 +164,9 @@ function createTokenUseTracker() {
 }
 
 module.exports = {
+  TEST_TOKEN_HEADER,
+  testTokenFromEnv,
+  testTokenMatches,
   TOKEN_TTL_SEC,
   MAX_REQUESTS_PER_TOKEN,
   isStrongSecret,
