@@ -83,7 +83,7 @@ test('valid tier ids are accepted and the prompt uses the server-side product de
     const byId = Object.fromEntries(cat.products.map((p) => [p.id, p.description]));
     assert.ok(runs[0].body.prompt.startsWith(`Change only the floor. Replace the entire existing floor with ${byId['flooring.best']}`), runs[0].body.prompt);
     assert.ok(!runs[0].body.prompt.includes(byId['backsplash.better']) && !runs[0].body.prompt.includes(byId['cabinets.better']));
-    assert.ok(runs[1].body.prompt.includes(`- Cabinet faces: ${byId['cabinets.better']}`));
+    assert.ok(runs[1].body.prompt.includes(`- Cabinet faces: Bright white ${require('../remodelGenerate.cjs').SHAKER_DOORS}`));
     assert.ok(runs[1].body.prompt.includes(`- Backsplash: ${byId['backsplash.better']}`));
     assert.ok(!runs[1].body.prompt.includes(byId['flooring.best']));
     assert.doesNotMatch(r.text, PRICE);

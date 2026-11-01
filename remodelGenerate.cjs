@@ -16,8 +16,18 @@ function falGuidance() {
   const raw = (process.env.REMODEL_GUIDANCE || '').trim(); const g = Number(raw);
   return raw !== '' && Number.isFinite(g) && g >= 1 && g <= 20 ? g : 3.5;
 }
-/** Floor-first two-call edit (R59 option A) is ON by default. Only REMODEL_TWO_PASS=0 (or false/off/no) turns it off. */
-function twoPassOn() { return !/^(0|false|off|no)$/i.test((process.env.REMODEL_TWO_PASS || '').trim()); }
+/**
+ * Floor-first two-call edit (R59 option A). On for unset/''/1/true/on/yes; off for 0/false/off/no.
+ * Any other value fails closed (OFF, fewer fal calls) with one warn log per distinct value.
+ */
+const warnedTwoPass = new Set();
+function twoPassOn() {
+  const raw = (process.env.REMODEL_TWO_PASS || '').trim().toLowerCase();
+  if (['', '1', 'true', 'on', 'yes'].includes(raw)) return true;
+  if (['0', 'false', 'off', 'no'].includes(raw)) return false;
+  if (!warnedTwoPass.has(raw)) { warnedTwoPass.add(raw); console.warn('remodel_two_pass_invalid', JSON.stringify({ value: raw.slice(0, 20), using: false })); }
+  return false;
+}
 /** REMODEL_FLOOR_GUIDANCE: guidance for the floor-only pass, fal range 1-20, default 5.0. */
 function floorGuidance() {
   const raw = (process.env.REMODEL_FLOOR_GUIDANCE || '').trim(); const g = Number(raw);
@@ -61,11 +71,25 @@ function getFalKey() {
   return key;
 }
 
-const MAX_PROMPT_CHARS = 1000;
+// Our own limit; fal publishes none for Kontext. 1200 (R60): two-pass calls all fit under 800, but the
+// single-call prompt for a full catalog kitchen (two-pass off) reaches ~1165. Over it is a clear 400.
+const MAX_PROMPT_CHARS = 1200;
 const MAX_FINISH_CHARS = 100;
 const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 // Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
 const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
+/** Free-text finishes are material words only: no money talk and no instructions to the model. */
+// Checked on the raw text (word boundaries, so 'free-form', 'cost-effective', 'price-matched', 'prompt gray' pass)
+// and on a squashed copy with spaces/hyphens/dots removed (catches 'i g n o r e', 'ig-nore').
+const FINISH_DENY_RE = /[$€£¥]|\b(?:dollars?|bucks?|usd|eur|euros?|pounds? sterling|grand|prices?|pricing|cheap(?:est)?|discount|sale|watermarks?|logos?|captions?|labels? saying)\b|\b\d+\s*(?:k|usd|eur|euros?|bucks?|grand)\b|\b(?:add|write|put|show|print|insert)\b[^.]{0,20}\b(?:text|words?|letters?|captions?|signs?|labels?)\b|\bsaying\b|\b(?:ignore|disregard|forget)\b|\b(?:system prompt|instructions?)\b|\b(?:costs?|prices?)\s*(?:is|are|of|:|\d)/i;
+const FINISH_DENY_SQUASHED_RE = /ignore|disregard|forgetprevious|systemprompt|instruction|watermark|dollar|bucks/i;
+function finishDenied(t) {
+  // Allowed compounds are removed first; any other free/cost/price word is still blocked.
+  const scrubbed = t.replace(/\b(?:free-form|freeform|cost-effective|price-matched|free-standing|freestanding)\b/gi, ' ');
+  if (FINISH_DENY_RE.test(scrubbed)) return true;
+  if (/\b(?:free|costs?|prices?)\b|\bsystem\b|\bprompts?\s*[:=]|\b(?:the|your|this|my|show|reveal|print)\s+prompts?\b/i.test(scrubbed)) return true;
+  return FINISH_DENY_SQUASHED_RE.test(t.replace(/[\s\-_.'/]+/g, ''));
+}
 const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
 const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
@@ -109,6 +133,7 @@ function validateGenerateBody(body) {
     if (typeof v !== 'string') return { error: `finishes.${k} must be a string` };
     const t = v.trim();
     if (t.length > MAX_FINISH_CHARS || !FINISH_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
+    if (finishDenied(t)) return { error: `finishes.${k} is not a valid finish` };
     finishes[k] = t;
   }
   // Good/better/best picks: ids only, resolved server-side to the verified product description.
@@ -123,7 +148,9 @@ function validateGenerateBody(body) {
   const img = validateImage(body.imageUrl ?? body.image_url);
   if (img.error) return img;
   const prompt = buildPrompt(room, finishes, { catalogSlots });
-  if (prompt.length > MAX_PROMPT_CHARS) return { error: 'Prompt too long' };
+  // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
+  const sent = planCalls({ room, finishes, catalogSlots, prompt });
+  if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
   const longSide = imageLongSide(img.image_url);
   if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
   return { projectId, room, finishes, catalogSlots, image_url: img.image_url, prompt, longSide };
@@ -184,12 +211,30 @@ function keepList(f, hasFloor) {
   return `${keep.join(', ')} and ${last}`;
 }
 
+// Kept short so every tier combo fits MAX_PROMPT_CHARS per fal call (R60). Meaning: five-piece Shaker, flat frame, recessed flat panel, not slab.
+const SHAKER_DOORS = 'five-piece Shaker doors and drawers: flat square frame around a recessed flat panel, not slab';
+const SHAKER_RE = /\bshaker\b/i;
+/** QA P3: a bare 'white shaker' renders as flat slab doors. Spell the door out, in the chosen color. */
+function cabinetPhrase(v, fromCatalog) {
+  const raw = String(v).replace(/\s+/g, ' ').trim();
+  if (!SHAKER_RE.test(raw)) return raw;
+  if (fromCatalog) {
+    // Color = the words before the first construction/style word ('Bright white painted Shaker, ...' -> 'Bright white').
+    const color = raw.split(/\b(?:painted|stained|recessed|5-piece|five-piece|shaker|doors?|cabinets?)\b/i)[0].replace(/[\s,;-]+$/, '').trim();
+    // R60: the full product text is dropped; color + door style is what the image needs.
+    return `${color ? `${color} ` : ''}${SHAKER_DOORS}`;
+  }
+  const color = raw.replace(/\bshaker(?:[- ]style|[- ]type)?\b/gi, ' ').replace(/\b(?:cabinets?|doors?|style)\b/gi, ' ')
+    .replace(/\s+([,;])/g, (_, c) => c).replace(/^[\s,;-]+|[\s,;-]+$/g, '').replace(/\s+/g, ' ').trim();
+  return `${color ? `${color} ` : ''}${SHAKER_DOORS}`;
+}
+
 function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
   const hasFloor = !(f.floor == null || f.floor === '');
   const others = [
-    ['Cabinet faces', f.cabinets], ['Countertops', f.counters], ['Wall paint/tile', f.walls],
+    ['Cabinet faces', f.cabinets == null || f.cabinets === '' ? f.cabinets : cabinetPhrase(f.cabinets, fromCat.has('cabinets'))], ['Countertops', f.counters], ['Wall paint/tile', f.walls],
     ['Backsplash', f.backsplash], ['Vanity', f.vanity], ['Tub/shower', f.tub_shower],
   ].filter(([, v]) => !(v == null || v === ''));
   return [
@@ -469,6 +514,9 @@ module.exports = {
   falModel,
   falGuidance,
   planCalls,
+  FINISH_DENY_RE,
+  cabinetPhrase,
+  SHAKER_DOORS,
   resolvedConfig,
   twoPassOn,
   floorOnlyPrompt,
