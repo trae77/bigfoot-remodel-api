@@ -105,8 +105,8 @@ test('inputs under 1024px on the long side log a warning (no upscaling)', () => 
 });
 
 test('PUNCH P2: per-IP daily cap counts fal calls (two-pass = 2), checked before any call', async () => {
-  const runs = []; const genCounter = require('../security.cjs').createDailyCounter();
-  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '3', REMODEL_GLOBAL_DAILY: '100' }, { genCounter });
+  const runs = []; const genCounter = require('../capStore.cjs').createMemoryCapStore();
+  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '3', REMODEL_GLOBAL_DAILY: '100' }, { capStore: genCounter });
   try {
     assert.equal((await gen(s.base)).status, 200); assert.equal(runs.length, 2);
     assert.equal(genCounter.get('global'), 2);
@@ -119,8 +119,8 @@ test('PUNCH P2: per-IP daily cap counts fal calls (two-pass = 2), checked before
 });
 
 test('PUNCH P2: global daily cap counts fal calls too', async () => {
-  const runs = []; const genCounter = require('../security.cjs').createDailyCounter();
-  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '100', REMODEL_GLOBAL_DAILY: '1' }, { genCounter });
+  const runs = []; const genCounter = require('../capStore.cjs').createMemoryCapStore();
+  const s = await boot(stubFal(runs), { REMODEL_PER_IP_DAILY: '100', REMODEL_GLOBAL_DAILY: '1' }, { capStore: genCounter });
   try {
     assert.equal((await gen(s.base)).status, 429); assert.equal(runs.length, 0); assert.equal(genCounter.get('global'), 0);
   } finally { await s.close(); }

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node remodelApi.cjs",
-    "test": "node --test test/*.test.cjs"
+    "test": "REMODEL_CAPS_STORE=memory node --test test/*.test.cjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -28,10 +28,10 @@ async function start({ del = { ok: true, status: 200, json: async () => ({ cdn_d
     return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': RID }), text: async () => JSON.stringify({ images: [{ url: 'https://v3.fal.media/files/x.jpg' }], seed: 1 }) };
   };
   const sec = require('../security.cjs');
-  const genCounter = sec.createDailyCounter();
-  let incs = 0; const inc = genCounter.inc.bind(genCounter); genCounter.inc = (...a) => { incs++; return inc(...a); };
+  const genCounter = require('../capStore.cjs').createMemoryCapStore();
+  let incs = 0; const realRes = genCounter.reserve.bind(genCounter); genCounter.reserve = (...a) => { incs++; return realRes(...a); };
   const { createApp } = require('../remodelApi.cjs');
-  const server = http.createServer(createApp({ fetchImpl, genCounter }));
+  const server = http.createServer(createApp({ fetchImpl, capStore: genCounter }));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const req = async (p, { method = 'POST', body, token, ip = '9.9.9.9' } = {}) => {

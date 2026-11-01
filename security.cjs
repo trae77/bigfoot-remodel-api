@@ -121,21 +121,6 @@ function createDailyCounter() {
   };
 }
 
-/** UTC-calendar-month counter (YYYY-MM). Same shape as the daily counter; resets when the UTC month changes. */
-function createMonthlyCounter() {
-  let month = '';
-  let count = 0;
-  function roll(now) {
-    const m = new Date(now).toISOString().slice(0, 7);
-    if (m !== month) { month = m; count = 0; }
-  }
-  return {
-    get(now = Date.now()) { roll(now); return count; },
-    inc(now = Date.now()) { roll(now); count += 1; },
-    reset() { month = ''; count = 0; },
-  };
-}
-
 /** Per-token use counts keyed on the token nonce; entries are dropped after the token expires. */
 function createTokenUseTracker() {
   const map = new Map();
@@ -168,5 +153,5 @@ module.exports = {
   verifyToken,
   safeEqual,
   createDailyCounter,
-  createMonthlyCounter,
+  ipHash,
 };
