@@ -12,7 +12,7 @@ const PRICE = /\$\s?\d|price|usd|dollar/i;
 const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
 
 function fresh(env = {}) {
-  for (const k of ['FAL_KEY', 'REMODEL_TOKEN_SECRET', 'FAL_STORE_IO', 'FAL_MEDIA_EXPIRATION_SEC', 'PUBLIC_API_ORIGIN', 'REMODEL_PRODUCTS_FILE']) delete process.env[k];
+  for (const k of ['FAL_KEY', 'REMODEL_TOKEN_SECRET', 'FAL_STORE_IO', 'REMODEL_GUIDANCE', 'REMODEL_FAL_MODEL', 'FAL_MEDIA_EXPIRATION_SEC', 'PUBLIC_API_ORIGIN', 'REMODEL_PRODUCTS_FILE']) delete process.env[k];
   Object.assign(process.env, { FAL_KEY: 'fake-fal', REMODEL_TOKEN_SECRET: SECRET }, env);
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs', '../productCatalog.cjs']) delete require.cache[require.resolve(m)];
   require('../remodelGenerate.cjs').sessionSpend.clear();
@@ -240,7 +240,29 @@ test('QA P3: display names never end in a SKU or model number', () => {
   for (const m of names.matchAll(/"name":"([^"]+)"/g)) assert.ok(!/\s(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(m[1]), m[1]);
 });
 
-test('SKU strip: only codes of 5+ characters with letters and digits, and never below 2 words', () => {
+test('REMODEL_GUIDANCE and REMODEL_FAL_MODEL: defaults pro + 3.5, allowlisted overrides, spend cap uses the model price', async () => {
+  for (const [env, url, g] of [
+    [{}, 'https://fal.run/fal-ai/flux-pro/kontext', 3.5],
+    [{ REMODEL_GUIDANCE: '6' }, 'https://fal.run/fal-ai/flux-pro/kontext', 6],
+    [{ REMODEL_GUIDANCE: '25' }, 'https://fal.run/fal-ai/flux-pro/kontext', 3.5],
+    [{ REMODEL_GUIDANCE: 'abc', REMODEL_FAL_MODEL: 'max' }, 'https://fal.run/fal-ai/flux-pro/kontext/max', 3.5],
+    [{ REMODEL_FAL_MODEL: 'https://evil.example' }, 'https://fal.run/fal-ai/flux-pro/kontext', 3.5],
+  ]) {
+    fresh(env); const s = await start();
+    try {
+      const tok = await s.token();
+      const r = await s.req('/api/remodel/generate', { token: tok, body: { projectId: 1, room: 'kitchen', imageUrl: PNG, guidance_scale: 20, strength: 1, seed: 7, prompt: 'ignored' } });
+      assert.equal(r.status, 200);
+      const run = s.calls.find((c) => c.kind === 'run');
+      assert.equal(run.url, url, JSON.stringify(env));
+      assert.equal(run.body.guidance_scale, g, JSON.stringify(env));
+      assert.ok(!('strength' in run.body) && !('seed' in run.body) && !run.body.prompt.includes('ignored'), 'client params are ignored');
+      assert.equal(r.json.remainingSessionGenerates, env.REMODEL_FAL_MODEL === 'max' ? 2 : 5 - 1, 'max costs $0.08 against the $0.25 session cap');
+    } finally { await s.close(); }
+  }
+});
+
+test('SKU strip: only codes of 5+ characters with letters and digits, and keep the original only if no alphabetic word remains', () => {
   fresh();
   const { cleanDisplayName } = require('../productCatalog.cjs');
   assert.equal(cleanDisplayName('LG 4K'), 'LG 4K');
@@ -248,7 +270,19 @@ test('SKU strip: only codes of 5+ characters with letters and digits, and never 
   assert.equal(cleanDisplayName('Kohler shower K12'), 'Kohler shower K12', 'too short to be a SKU');
   assert.equal(cleanDisplayName('Moen faucet 87039'), 'Moen faucet 87039', 'digits only is not a SKU');
   assert.equal(cleanDisplayName('Samsung TV QN65Q80C'), 'Samsung TV');
-  assert.equal(cleanDisplayName('Faucet I96711LP3'), 'Faucet I96711LP3', 'would leave 1 word, keep the original');
-  assert.equal(cleanDisplayName('Widget AB12C'), 'Widget AB12C');
+  assert.equal(cleanDisplayName('Faucet I96711LP3'), 'Faucet', 'QA #5 P3: 1 real word left is enough');
+  assert.equal(cleanDisplayName('Sink I96711LP3'), 'Sink');
+  assert.equal(cleanDisplayName('I96711LP3'), 'I96711LP3', 'a bare code stays');
+  assert.equal(cleanDisplayName('Widget AB12C'), 'Widget');
   assert.equal(cleanDisplayName('Hampton Bay recessed-panel KB36-UF'), 'Hampton Bay recessed-panel');
+});
+
+test('PUNCH P3-3: brand-only names get the category word', () => {
+  const { cleanDisplayName } = require('../productCatalog.cjs');
+  assert.equal(cleanDisplayName('Kohler K-1234', 'vanity'), 'Kohler vanity');
+  assert.equal(cleanDisplayName('Kohler', 'faucet'), 'Kohler faucet');
+  assert.equal(cleanDisplayName('Sink I96711LP3', 'sink'), 'Sink', 'already names the category');
+  assert.equal(cleanDisplayName('Kohler Artifacts', 'vanity'), 'Kohler Artifacts', 'two words left: unchanged');
+  assert.equal(cleanDisplayName('Kohler', 'constructor'), 'Kohler', 'unknown category: unchanged');
+  assert.equal(cleanDisplayName('Kohler'), 'Kohler');
 });

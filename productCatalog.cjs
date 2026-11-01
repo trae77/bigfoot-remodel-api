@@ -13,13 +13,24 @@ let cached = null;
 // A trailing model/SKU code: at least 5 characters of caps, digits and dashes, with both a letter and a digit
 // (I96711LP3, KB36-UF, TSTB-TS404-LR-25X96). Short tokens such as '4K' or '36' are never touched.
 const SKU_TAIL_RE = /\s+((?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*)$/;
-/** Public names never end in a SKU, and never carry case sizes in parentheses. If fewer than 2 words would remain, the original name is kept. */
-function cleanDisplayName(v) {
+/** Public names never end in a SKU, and never carry case sizes in parentheses. If no alphabetic word would remain, the original name is kept. */
+/** Noun added to a brand-only name so the label says what it is ('Kohler' -> 'Kohler vanity'). */
+const CATEGORY_NOUN = { flooring: 'flooring', cabinets: 'cabinets', countertops: 'countertop', backsplash: 'backsplash', tub_shower: 'tub/shower', vanity: 'vanity', faucet: 'faucet', sink: 'sink' };
+function cleanDisplayName(v, category) {
+  const t = stripSkuName(v);
+  if (t == null) return null;
+  const noun = category && Object.hasOwn(CATEGORY_NOUN, category) ? CATEGORY_NOUN[category] : null;
+  // Brand-only (one word left) gets the category word, unless it already is one.
+  if (noun && t.split(' ').length === 1 && !new RegExp(`\\b${noun.split('/')[0]}`, 'i').test(t)) return `${t} ${noun}`;
+  return t;
+}
+function stripSkuName(v) {
   if (typeof v !== 'string' || !v.trim()) return null;
   const orig = v.replace(/\s+/g, ' ').trim();
   let t = orig.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
   for (let m = SKU_TAIL_RE.exec(t); m && m[1].replace(/-/g, '').length >= 5; m = SKU_TAIL_RE.exec(t)) t = t.slice(0, m.index).trim();
-  return t.split(' ').filter(Boolean).length >= 2 ? t : orig;
+  // Strip the code whenever at least 1 alphabetic word remains ('Sink I96711LP3' -> 'Sink'); a bare code stays as it was.
+  return /[A-Za-z]{2,}/.test(t) ? t : orig;
 }
 
 function loadCatalog(file) {
@@ -35,7 +46,7 @@ function loadCatalog(file) {
     if (!catIds.has(p.category) || !tiers.includes(p.tier)) continue;
     if (typeof p.source_url !== 'string' || !/^https:\/\//.test(p.source_url)) continue;
     if (typeof p.description !== 'string' || !p.description.trim() || PRICE_RE.test(p.description) || PRICE_RE.test(p.name || '')) continue;
-    byId.set(p.id, { id: p.id, category: p.category, tier: p.tier, name: String(p.name || ''), description: p.description.trim(), tierLabel: typeof p.tierLabel === 'string' ? p.tierLabel : null, displayName: cleanDisplayName(p.displayName) });
+    byId.set(p.id, { id: p.id, category: p.category, tier: p.tier, name: String(p.name || ''), description: p.description.trim(), tierLabel: typeof p.tierLabel === 'string' ? p.tierLabel : null, displayName: cleanDisplayName(p.displayName, p.category) });
   }
   const quoteOnly = (raw.quoteOnly || []).filter((q) => q && catIds.has(q.category)).map((q) => ({ category: q.category, tier: String(q.tier), label: String(q.label || 'Quote-only') }));
   return { tiers, categories, byId, quoteOnly };

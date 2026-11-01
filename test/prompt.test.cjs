@@ -18,7 +18,7 @@ test('non-wood floors and unchanged stay as-is', () => {
   assert.equal(floorPhrase('Gray porcelain tile'), 'Gray porcelain tile');
   assert.equal(floorPhrase('Oak-look vinyl plank'), 'Oak-look vinyl plank');
   const none = buildPrompt('kitchen', {});
-  assert.ok(!/Floor:/.test(none)); assert.match(none, /room dimensions, and the floor\./);
+  assert.ok(!/Floor:/.test(none)); assert.match(none, /room dimensions and the floor\./);
 });
 
 test('explicit herringbone/parquet keeps the pattern and wood type', () => {
@@ -44,6 +44,14 @@ test('catalog text that says "no parquet or herringbone" is cleaned before it re
   assert.match(pr, /Oak strips, matte; laid as long straight parallel planks/);
 });
 
+test('keep list never contradicts an edit: changing wall paint drops "walls" from what to keep', () => {
+  const pr = buildPrompt('kitchen', { floor: 'light oak', cabinets: 'white shaker', counters: 'white quartz', walls: 'soft gray' });
+  const keep = pr.split('\n').find((l) => l.startsWith('Keep everything else'));
+  assert.ok(!/\bwalls\b/.test(keep), keep); assert.match(keep, /wall layout/);
+  assert.ok(!/the floor/.test(keep));
+  assert.match(buildPrompt('kitchen', { cabinets: 'x' }), /Keep everything else exactly as in the photo: walls, /);
+});
+
 test('floorPhrase strips "no ..." negations before it looks for a pattern word', () => {
   assert.equal(floorPhrase('no parquet please oak'), `wide-plank please oak ${TAIL}`);
   assert.ok(!/pattern|parquet/.test(floorPhrase('no parquet please oak')));
@@ -52,4 +60,12 @@ test('floorPhrase strips "no ..." negations before it looks for a pattern word',
   assert.equal(floorPhrase('White oak herringbone'), 'white oak hardwood flooring in a herringbone pattern');
   assert.equal(floorPhrase('no parquet'), 'a new plain floor');
   assert.ok(!/parquet|herringbone/i.test(buildPrompt('kitchen', { floor: 'no parquet please oak' })));
+});
+
+test('QA #5 P3: a removed negation leaves no stray comma', () => {
+  assert.equal(floorPhrase('not parquet, oak'), `wide-plank oak ${TAIL}`);
+  assert.equal(floorPhrase('Oak, no parquet, matte'), `wide-plank oak, matte ${TAIL}`);
+  const pr = buildPrompt('kitchen', { floor: 'not parquet, oak' }, { catalogSlots: new Set(['floor']) });
+  assert.match(pr, /replace the entire existing floor with oak; /);
+  assert.ok(!/with [,;]|,\s*,|,\s*;/.test(pr), pr);
 });

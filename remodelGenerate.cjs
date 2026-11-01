@@ -4,11 +4,50 @@
  * Authorized William t1097u — preview only. Never log FAL_KEY.
  */
 
-const FAL_MODEL = 'fal-ai/flux-pro/kontext';
+// Model and $/image from fal's model pages (fal.ai/models/fal-ai/flux-pro/kontext[/max]/llms.txt, 2026-10-31).
+const FAL_MODELS = { pro: { id: 'fal-ai/flux-pro/kontext', usd: 0.04 }, max: { id: 'fal-ai/flux-pro/kontext/max', usd: 0.08 } };
+/** REMODEL_FAL_MODEL=pro|max (default pro). Anything else falls back to pro. */
+function falModel() {
+  const k = (process.env.REMODEL_FAL_MODEL || '').trim().toLowerCase();
+  return Object.hasOwn(FAL_MODELS, k) ? FAL_MODELS[k] : FAL_MODELS.pro;
+}
+/** REMODEL_GUIDANCE: fal range 1-20, default 3.5. Out of range or not a number falls back to 3.5. */
+function falGuidance() {
+  const raw = (process.env.REMODEL_GUIDANCE || '').trim(); const g = Number(raw);
+  return raw !== '' && Number.isFinite(g) && g >= 1 && g <= 20 ? g : 3.5;
+}
+/** REMODEL_TWO_PASS=1 turns on the floor-first two-call edit (R59 option A). Default off. */
+function twoPassOn() { return (process.env.REMODEL_TWO_PASS || '').trim() === '1'; }
+/** REMODEL_FLOOR_GUIDANCE: guidance for the floor-only pass, fal range 1-20, default 5.0. */
+function floorGuidance() {
+  const raw = (process.env.REMODEL_FLOOR_GUIDANCE || '').trim(); const g = Number(raw);
+  return raw !== '' && Number.isFinite(g) && g >= 1 && g <= 20 ? g : 5;
+}
+const MIN_LONG_SIDE_PX = 1024;
+/** Long side in px from JPEG/PNG/WebP header bytes, or null. Used only for a log warning; we never upscale. */
+function imageLongSide(dataUri) {
+  try {
+    const m = /^data:image\/(jpeg|png|webp);base64,(.*)$/.exec(dataUri); if (!m) return null;
+    const b = Buffer.from(m[2].slice(0, 200000), 'base64');
+    let w = null; let h = null;
+    if (m[1] === 'png' && b.length >= 24) { w = b.readUInt32BE(16); h = b.readUInt32BE(20); }
+    else if (m[1] === 'webp' && b.length >= 30 && b.toString('latin1', 12, 16) === 'VP8X') { w = 1 + b.readUIntLE(24, 3); h = 1 + b.readUIntLE(27, 3); }
+    else if (m[1] === 'jpeg') {
+      for (let i = 2; i + 9 < b.length;) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const mk = b[i + 1];
+        if (mk >= 0xc0 && mk <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(mk)) { h = b.readUInt16BE(i + 5); w = b.readUInt16BE(i + 7); break; }
+        i += 2 + b.readUInt16BE(i + 2);
+      }
+    }
+    return w && h ? Math.max(w, h) : null;
+  } catch { return null; }
+}
+const FAL_MODEL = FAL_MODELS.pro.id;
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
 const store = require('./imageStore.cjs');
 const catalog = require('./productCatalog.cjs');
-const COST_PER_STILL_USD = 0.04;
+const COST_PER_STILL_USD = 0.04; // pro; use falModel().usd for the live cost
 const MAX_GENERATES_PER_SESSION = 5;
 const MAX_SESSION_SPEND_USD = 0.25;
 const HONESTY = 'AI preview — not a final design · not a bid';
@@ -85,18 +124,26 @@ function validateGenerateBody(body) {
   if (img.error) return img;
   const prompt = buildPrompt(room, finishes, { catalogSlots });
   if (prompt.length > MAX_PROMPT_CHARS) return { error: 'Prompt too long' };
-  return { projectId, room, finishes, image_url: img.image_url, prompt };
+  const longSide = imageLongSide(img.image_url);
+  if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
+  return { projectId, room, finishes, catalogSlots, image_url: img.image_url, prompt, longSide };
 }
 
 // Naming a pattern, even as "no parquet", pulls Kontext toward it, so unwanted patterns are never named.
 const NEGATED_PATTERN_RE = /[,;]?\s*\b(?:no|not|without)\s+(?:parquet|herringbone|chevron|basket-?weave)(?:\s*(?:,|or|and)\s*(?:parquet|herringbone|chevron|basket-?weave))*\b/gi;
+/** Remove negated pattern phrases and tidy the punctuation they leave ('not parquet, oak' -> 'oak'). */
+function stripNegations(v) {
+  return String(v).replace(NEGATED_PATTERN_RE, ' ')
+    .replace(/\s+([,;])/g, (_, c) => c).replace(/([,;])(\s*[,;])+/g, (_, c) => c)
+    .replace(/^[\s,;]+|[\s,;]+$/g, '').replace(/\s+/g, ' ').trim();
+}
 const PLANK_TAIL = 'hardwood flooring in long straight parallel planks';
 const WOOD_RE = /\b(oak|walnut|maple|hickory|cherry|ash|birch|pine|teak|acacia|hardwood|wood)\b/i;
 const NOT_WOOD_RE = /\b(tile|vinyl|lvp|laminate|carpet|concrete|stone|marble|porcelain|ceramic|epoxy)\b/i;
 /** Wood floor choices become explicit wide-plank wording so the model doesn't drift to parquet or herringbone. */
 function floorPhrase(v) {
   // Strip "no parquet", "without herringbone" etc. first, so a negated pattern is never read as the choice.
-  const raw = String(v).replace(NEGATED_PATTERN_RE, ' ').replace(/\s+/g, ' ').trim();
+  const raw = stripNegations(v);
   if (!raw) return 'a new plain floor';
   if ((!WOOD_RE.test(raw) && !/\b(herringbone|parquet|basket-?weave)\b/i.test(raw)) || NOT_WOOD_RE.test(raw)) return raw;
   const pat = /\bherringbone\b/i.test(raw) ? 'herringbone' : /\b(parquet|basket-?weave)\b/i.test(raw) ? 'parquet' : null;
@@ -116,7 +163,7 @@ function floorPhrase(v) {
  */
 const PATTERN_RE = /\b(herringbone|parquet|basket-?weave|chevron)\b/i;
 function floorInstruction(v, fromCatalog) {
-  const target = (fromCatalog ? String(v).trim() : floorPhrase(v)).replace(NEGATED_PATTERN_RE, '').replace(/\s+/g, ' ').trim();
+  const target = stripNegations(fromCatalog ? String(v).trim() : floorPhrase(v));
   const patterned = PATTERN_RE.test(target);
   const planks = !patterned && /\b(plank|planks|lvp|hardwood|vinyl|laminate|wood|oak|strips?)\b/i.test(target);
   const parts = [`replace the entire existing floor with ${target}`];
@@ -129,6 +176,14 @@ function floorInstruction(v, fromCatalog) {
  * Kontext edits best with a direct instruction first and preservation stated after (BFL Kontext guide).
  * The floor is the edit it most often skips, so it leads, on its own line, ahead of the other finishes.
  */
+/** What to keep, minus anything this prompt asks to change (a51aaa6 said "keep walls" while also changing wall paint). */
+function keepList(f, hasFloor) {
+  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', 'cabinet layout', 'appliance footprints', 'fixture layout', 'room dimensions'];
+  if (!hasFloor) keep.push('the floor');
+  const last = keep.pop();
+  return `${keep.join(', ')} and ${last}`;
+}
+
 function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
@@ -140,9 +195,9 @@ function buildPrompt(room, finishes, opts = {}) {
   return [
     `Edit this photo of a ${room || 'kitchen'}.`,
     ...(hasFloor ? [`Main edit - Floor: ${floorInstruction(f.floor, fromCat.has('floor'))}.`] : []),
-    ...(others.length ? ['Also change these finishes:', ...others.map(([k, v]) => `- ${k}: ${v}`)] : []),
+    ...(others.length ? [hasFloor ? 'Also change these finishes:' : 'Change these finishes:', ...others.map(([k, v]) => `- ${k}: ${v}`)] : []),
     '',
-    `Keep everything else exactly as in the photo: walls, windows, camera angle, lighting, cabinet layout, appliance footprints, fixture layout and room dimensions${hasFloor ? '' : ', and the floor'}. Do not add people, text overlays, or new furniture.`,
+    `Keep everything else exactly as in the photo: ${keepList(f, hasFloor)}. Do not add people, text overlays, or new furniture.`,
     'Output a single photoreal still suitable as an AI preview.',
   ].join('\n');
 }
@@ -151,6 +206,27 @@ function buildPrompt(room, finishes, opts = {}) {
 function absoluteImageUrl(path) {
   const o = (process.env.PUBLIC_API_ORIGIN || '').trim().replace(/\/+$/, '');
   return /^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(o) ? o + path : path;
+}
+
+/** Pass 1 of the two-pass edit: the floor and nothing else, short and direct (BFL: one direct instruction, then what to keep). */
+function floorOnlyPrompt(floor, fromCatalog) {
+  return [
+    `Change only the floor. ${floorInstruction(floor, fromCatalog).replace(/^replace/, 'Replace')}.`,
+    'Leave the cabinets, counters, walls, appliances, windows and camera angle unchanged.',
+  ].join('\n');
+}
+
+/** The fal calls one generate will make: [{ prompt, guidance_scale? }]. Two only when REMODEL_TWO_PASS=1, a floor change is asked for, and something else changes too. */
+function planCalls(v) {
+  const f = v.finishes || {};
+  const hasFloor = !(f.floor == null || f.floor === '');
+  if (!twoPassOn() || !hasFloor) return [{ prompt: v.prompt }];
+  const fromCat = v.catalogSlots instanceof Set && v.catalogSlots.has('floor');
+  const pass1 = { prompt: floorOnlyPrompt(f.floor, fromCat), guidance_scale: floorGuidance() };
+  const rest = { ...f, floor: null };
+  const others = Object.entries(rest).some(([, x]) => !(x == null || x === ''));
+  if (!others) return [pass1];
+  return [pass1, { prompt: buildPrompt(v.room, rest, { catalogSlots: v.catalogSlots }) }];
 }
 
 function sessionKeyFromReq(req) {
@@ -179,7 +255,7 @@ function getSessionBudget(key) {
 
 function remainingGenerates(row) {
   const byCount = MAX_GENERATES_PER_SESSION - row.count;
-  const bySpend = Math.floor((MAX_SESSION_SPEND_USD - row.spendUsd) / COST_PER_STILL_USD + 1e-9);
+  const bySpend = Math.floor((MAX_SESSION_SPEND_USD - row.spendUsd) / falModel().usd + 1e-9);
   return Math.max(0, Math.min(byCount, bySpend));
 }
 
@@ -224,13 +300,13 @@ async function callFalKontext(input, opts = {}) {
   const body = {
     prompt: input.prompt,
     image_url: input.image_url,
-    guidance_scale: 3.5,
+    guidance_scale: typeof input.guidance_scale === 'number' ? input.guidance_scale : falGuidance(),
     num_images: 1,
     output_format: 'jpeg',
     safety_tolerance: '2',
   };
   const headers = falRunHeaders(key);
-  const res = await fetchImpl(FAL_RUN_URL, {
+  const res = await fetchImpl(`https://fal.run/${falModel().id}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -280,12 +356,14 @@ function createRemodelGenerateHandler(deps) {
 
       const v = req.remodelValid || validateGenerateBody(req.body);
       if (v.error) return res.status(v.status || 400).json({ error: v.error, honesty: HONESTY });
-      const { projectId, prompt, image_url } = v;
+      const { projectId, image_url } = v;
+      const calls = planCalls(v);
 
       const sessionKey = sessionKeyFromReq(req);
       const budget = getSessionBudget(sessionKey);
       const remaining = remainingGenerates(budget);
-      if (remaining <= 0) {
+      // Every fal call this request will make must fit the session cap before the first one goes out.
+      if (remaining < calls.length) {
         return res.status(429).json({
           error: 'Session preview limit reached. Start a new browser session or try later.',
           remainingSessionGenerates: 0,
@@ -293,37 +371,57 @@ function createRemodelGenerateHandler(deps) {
         });
       }
 
-      const data = await callFalKontext({ prompt, image_url }, { fetchImpl: deps.fetchImpl });
-      // fal has billed once it returns: charge the session now, even if the download below fails.
-      budget.count += 1;
-      budget.spendUsd += COST_PER_STILL_USD;
-      budget.updatedAt = Date.now();
-      sessionSpend.set(sessionKey, budget);
-
-      const falUrl = data?.images?.[0]?.url;
-      if (!falUrl) {
-        return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
-      }
-      // Privacy: copy the render into private in-process storage, then delete it from fal.
-      // The public fal URL is never sent to the client.
       const fetchImpl = deps.fetchImpl || globalThis.fetch;
-      let stored;
+      const results = [];
+      let input = image_url;
+      let cleaned = false;
+      const runCleanup = () => { if (!cleaned) { cleaned = true; cleanup(); } };
       try {
-        stored = await store.fetchFalImage(falUrl, fetchImpl);
-      } finally {
-        // Never block the client on fal's delete: run it after the response is sent (capped at 3 s in imageStore).
-        const rid = data.__falRequestId; const key = getFalKey();
-        setImmediate(() => {
+      for (const c of calls) {
+        const d = await callFalKontext({ prompt: c.prompt, image_url: input, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, { fetchImpl: deps.fetchImpl });
+        // fal has billed once it returns: charge the session now, even if a later step fails.
+        budget.count += 1;
+        budget.spendUsd += falModel().usd;
+        budget.updatedAt = Date.now();
+        sessionSpend.set(sessionKey, budget);
+        results.push(d);
+        const u = d?.images?.[0]?.url;
+        if (!u) break;
+        input = u;
+      }
+      } catch (e) {
+        // A later pass threw: still log the skip/delete for every call fal already ran (pass 1's id stays in the audit log).
+        runCleanup();
+        throw e;
+      }
+      if (calls.length > 1) console.info('remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
+      const data = results[results.length - 1];
+      const falUrl = results.length === calls.length ? data?.images?.[0]?.url : null;
+      function cleanup() { setImmediate(() => {
+        for (const d of results) {
           // Server-side only, for QA delete checks: fal request id and counts. No URL, no key. Never sent to the browser.
-          const id = rid || null;
+          const rid = d.__falRequestId; const id = rid || null; const key = getFalKey();
           // With X-Fal-Store-IO: 0 fal keeps no request payload, so there is nothing to delete (the delete call 403s).
-          if (data.__falStoreIo === '0') { console.info('fal_payload_delete_skipped', JSON.stringify({ id, storeIo: '0' })); return; }
+          if (d.__falStoreIo === '0') { console.info('fal_payload_delete_skipped', JSON.stringify({ id, storeIo: '0' })); continue; }
           store.deleteFalPayload(rid, key, fetchImpl).then((del) => {
             if (del.ok) { console.info('fal_payload_delete_ok', JSON.stringify({ id, files: del.total ?? null })); return; }
             console.error('ALERT fal_payload_delete_failed', JSON.stringify({ id, status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
             if (typeof deps.onFalDeleteFail === 'function') Promise.resolve().then(() => deps.onFalDeleteFail(del)).catch(() => {});
           }).catch(() => console.error('ALERT fal_payload_delete_failed', JSON.stringify({ id, reason: 'exception' })));
-        });
+        }
+      }); }
+      if (!falUrl) {
+        runCleanup();
+        return res.status(502).json({ error: 'fal returned no image URL', honesty: HONESTY });
+      }
+      // Privacy: copy the render into private in-process storage, then delete it from fal.
+      // The public fal URL is never sent to the client.
+      let stored;
+      try {
+        stored = await store.fetchFalImage(falUrl, fetchImpl);
+      } finally {
+        // Never block the client on fal's delete: run it after the response is sent (capped at 3 s in imageStore).
+        runCleanup();
       }
       const id = deps.imageStore.put(stored.buf, stored.type);
       const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;
@@ -334,7 +432,7 @@ function createRemodelGenerateHandler(deps) {
         afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
-        provider: FAL_MODEL,
+        provider: falModel().id,
         seed: data.seed ?? null,
         projectId,
       });
@@ -353,6 +451,12 @@ function createRemodelGenerateHandler(deps) {
 
 module.exports = {
   FAL_MODEL,
+  FAL_MODELS,
+  falModel,
+  falGuidance,
+  planCalls,
+  floorOnlyPrompt,
+  imageLongSide,
   COST_PER_STILL_USD,
   MAX_GENERATES_PER_SESSION,
   MAX_SESSION_SPEND_USD,

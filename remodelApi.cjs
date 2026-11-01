@@ -9,6 +9,7 @@ const {
   getFalKey,
   validateGenerateBody,
   HONESTY,
+  planCalls,
 } = require('./remodelGenerate.cjs');
 
 const BODY_LIMIT = '10mb';
@@ -132,18 +133,22 @@ function createApp(opts = {}) {
   function capGate(req, res, next) {
     const cfg = req.remodelCfg;
     const p = req.remodelClient && req.remodelClient.payload;
-    if (genCounter.get('global') >= cfg.globalDaily) {
+    // Count fal calls, not generates: two-pass makes 2 calls and needs 2 slots, checked before the first call.
+    const n = planCalls(req.remodelValid).length;
+    if (genCounter.get('global') + n > cfg.globalDaily) {
       return res.status(429).json({ error: 'Daily preview limit reached. Try again tomorrow.', honesty: HONESTY });
     }
-    if (genCounter.get('ip:' + req.remodelIp) >= cfg.perIpDaily) {
+    if (genCounter.get('ip:' + req.remodelIp) + n > cfg.perIpDaily) {
       return res.status(429).json({ error: 'Daily preview limit reached for this network.', honesty: HONESTY });
     }
     if (p && !tokenUses.take(p, cfg.perTokenMax)) {
       return res.status(401).json({ error: 'Token used up. Fetch a new one.', honesty: HONESTY });
     }
     // Reserve the slot before calling fal so concurrent requests can't overshoot the cap.
-    genCounter.inc('global');
-    genCounter.inc('ip:' + req.remodelIp);
+    for (let i = 0; i < n; i++) {
+      genCounter.inc('global');
+      genCounter.inc('ip:' + req.remodelIp);
+    }
     return next();
   }
 
