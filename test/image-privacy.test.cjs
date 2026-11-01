@@ -14,7 +14,7 @@ function mockFal(log, { imgHost = 'https://v3.fal.media/files/out.jpg', deleteOk
     url = String(url); log.push((init.method || 'GET') + ' ' + url);
     if (url.startsWith('https://fal.run/')) return { ok: true, status: 200, headers: hdrs({ 'x-fal-request-id': RID }), text: async () => JSON.stringify({ images: [{ url: imgHost }], seed: 7 }) };
     if (url.includes('fal.media') || url.startsWith('https://evil')) return { ok: true, status: 200, headers: hdrs({ 'content-type': 'image/jpeg' }), arrayBuffer: async () => JPG };
-    if (url.startsWith('https://api.fal.ai/')) return { ok: deleteOk, status: deleteOk ? 200 : 403, json: async () => ({}) };
+    if (url.startsWith('https://api.fal.ai/')) return { ok: deleteOk, status: deleteOk ? 200 : 403, json: async () => ({ cdn_delete_results: [{ link: 'https://v3.fal.media/files/out.jpg', exception: null }] }) };
     throw new Error('unexpected ' + url);
   };
 }
@@ -162,4 +162,16 @@ test('P3 sweep timer is unref-ed and cleared on close', async () => {
   let stopped = false; const orig = app.stopSweep; srv.removeAllListeners('close'); srv.on('close', () => { orig(); stopped = true; });
   await new Promise((r) => srv.close(r));
   assert.ok(stopped);
+});
+
+test('fal delete failure raises ALERT log with no URL, key or request id', async () => {
+  const log = []; const s = await boot(mockFal(log, { deleteOk: false }));
+  const orig = console.error; const errs = []; console.error = (...a) => errs.push(a.join(' '));
+  try {
+    const g = await generate(s.base);
+    assert.equal(g.status, 200);
+    const alert = errs.find((e) => e.includes('ALERT fal_payload_delete_failed'));
+    assert.ok(alert, 'alert emitted');
+    assert.ok(!/fal\.media|fake-fal/.test(alert) && !alert.includes(RID));
+  } finally { console.error = orig; await s.close(); }
 });

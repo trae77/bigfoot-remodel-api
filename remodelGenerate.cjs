@@ -255,7 +255,11 @@ function createRemodelGenerateHandler(deps) {
         stored = await store.fetchFalImage(falUrl, fetchImpl);
       } finally {
         const del = await store.deleteFalPayload(data.__falRequestId, getFalKey(), fetchImpl);
-        if (!del.ok) console.warn('fal payload delete not confirmed', del.status || del.reason);
+        if (!del.ok) {
+          // No URL, key or request id in the log. Alert hook is optional (e.g. a webhook set in env).
+          console.error('ALERT fal_payload_delete_failed', JSON.stringify({ status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
+          if (typeof deps.onFalDeleteFail === 'function') { try { deps.onFalDeleteFail(del); } catch {} }
+        }
       }
       const id = deps.imageStore.put(stored.buf, stored.type);
       const secret = (req.remodelCfg && req.remodelCfg.secret) || deps.secret;

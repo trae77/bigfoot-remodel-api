@@ -20,5 +20,5 @@ Set `FAL_KEY` on the host only (the only key var read; see DEPLOY-NOTE-P1-3.md).
 - The client gets only `afterImageUrl` = `/api/remodel/image/<random id>?exp=&sig=` (HMAC-SHA256 with `REMODEL_TOKEN_SECRET`, **15 min max**). There's no IP, email, project or prompt in the URL. `Cache-Control: private, no-store`. The fal URL is never returned.
 - Retention: deleted at TTL (15 min default, hard cap 7 days) by a 60 s sweep. Memory is also wiped whenever the free instance sleeps or restarts. Capped at 50 images / 60 MB.
 - Storage cost: $0 (Render free instance RAM). No bucket, no new account. R2/S3 were not used because they need a billing setup.
-- fal delete needs a fal key with `models:requests:write` + `assets:write` (fal "FULL" preset). If the key lacks them, the delete fails, a warning is logged (no URL), and fal's copy stays at an unguessable public URL until fal's own expiry. The client still never sees it.
+- fal delete needs a fal key with `models:requests:write` + `assets:write` (fal "FULL" preset). If the key lacks them, the delete fails, an `ALERT fal_payload_delete_failed` error is logged (no URL, key or id; per-file failures in a 200 also count), and fal's copy stays at an unguessable public URL until fal's own expiry. The client still never sees it.
 - Tests mock fal (`test/image-privacy.test.cjs`). No real renders.

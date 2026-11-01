@@ -99,7 +99,13 @@ async function deleteFalPayload(requestId, key, fetchImpl) {
     const r = await fetchImpl(`https://api.fal.ai/v1/models/requests/${requestId}/payloads`, {
       method: 'DELETE', headers: { Authorization: `Key ${key}`, 'Idempotency-Key': requestId },
     });
-    return { ok: r.ok, status: r.status };
+    if (!r.ok) return { ok: false, status: r.status };
+    // 200 can still carry per-file failures: fal returns cdn_delete_results[].exception.
+    let body = null; try { body = await r.json(); } catch { return { ok: false, status: r.status, reason: 'bad-body' }; }
+    const res = Array.isArray(body && body.cdn_delete_results) ? body.cdn_delete_results : null;
+    if (!res) return { ok: false, status: r.status, reason: 'no-results' };
+    const failed = res.filter((x) => x && x.exception != null).length;
+    return { ok: failed === 0, status: r.status, failed, total: res.length };
   } catch { return { ok: false, reason: 'network' }; }
 }
 
