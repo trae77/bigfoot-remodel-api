@@ -25,6 +25,8 @@ function mockFal(log, { imgHost = 'https://v3.fal.media/files/out.jpg', deleteOk
 
 async function boot(fetchImpl, imageStore, extra = {}) {
   process.env.REMODEL_TOKEN_SECRET = SECRET; process.env.FAL_KEY = 'fake-fal'; delete process.env.CORS_ORIGINS;
+  // These cover the payload-delete path, which only runs when payloads are stored (FAL_STORE_IO=1). The store-IO 0 skip is in tiers.test.cjs.
+  process.env.FAL_STORE_IO = '1';
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs']) delete require.cache[require.resolve(m)];
   require('../remodelGenerate.cjs').sessionSpend.clear();
   const { createApp } = require('../remodelApi.cjs');
@@ -53,7 +55,7 @@ test('render is copied private, fal URL never returned, fal payload deleted, sig
     assert.equal(img.headers.get('content-type'), 'image/jpeg');
     assert.match(img.headers.get('cache-control'), /no-store/);
     assert.deepEqual(Buffer.from(await img.arrayBuffer()), JPG);
-    const bad = await fetch(s.base + g.json.afterImageUrl.replace(/sig=./, 'sig=A'));
+    const bad = await fetch(s.base + g.json.afterImageUrl.replace(/sig=(.)/, (_, c) => 'sig=' + (c === 'A' ? 'B' : 'A')));
     assert.equal(bad.status, 403);
   } finally { await s.close(); }
 });

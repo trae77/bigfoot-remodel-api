@@ -12,7 +12,7 @@ const PRICE = /\$\s?\d|price|usd|dollar/i;
 const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
 
 function fresh(env = {}) {
-  for (const k of ['FAL_KEY', 'REMODEL_TOKEN_SECRET', 'FAL_STORE_IO', 'REMODEL_PRODUCTS_FILE']) delete process.env[k];
+  for (const k of ['FAL_KEY', 'REMODEL_TOKEN_SECRET', 'FAL_STORE_IO', 'FAL_MEDIA_EXPIRATION_SEC', 'PUBLIC_API_ORIGIN', 'REMODEL_PRODUCTS_FILE']) delete process.env[k];
   Object.assign(process.env, { FAL_KEY: 'fake-fal', REMODEL_TOKEN_SECRET: SECRET }, env);
   for (const m of ['../remodelGenerate.cjs', '../remodelApi.cjs', '../productCatalog.cjs']) delete require.cache[require.resolve(m)];
   require('../remodelGenerate.cjs').sessionSpend.clear();
@@ -79,7 +79,7 @@ test('valid tier ids are accepted and the prompt uses the server-side product de
     assert.equal(r.status, 200, r.text);
     const run = s.calls.find((c) => c.kind === 'run');
     const byId = Object.fromEntries(cat.products.map((p) => [p.id, p.description]));
-    assert.ok(run.body.prompt.includes(`- Floor: replace the existing floor entirely with ${byId['flooring.best']}; remove all existing floor pattern (including any parquet or herringbone); long straight planks`));
+    assert.ok(run.body.prompt.includes(`Main edit - Floor: replace the entire existing floor with ${byId['flooring.best']}`));
     assert.ok(run.body.prompt.includes(`- Cabinet faces: ${byId['cabinets.better']}`));
     assert.ok(run.body.prompt.includes(`- Backsplash: ${byId['backsplash.better']}`));
     assert.doesNotMatch(r.text, PRICE);
@@ -103,20 +103,22 @@ test('unknown, unavailable, wrong-category and free-text tier ids give 400 with 
   } finally { await s.close(); }
 });
 
-test('every floor tier and legacy floor option is an explicit full replacement', () => {
+test('every floor tier and legacy floor option is an explicit full replacement that leads the prompt', () => {
   fresh();
   const { buildPrompt } = require('../remodelGenerate.cjs');
+  const END = '; the new floor covers every visible floor area edge to edge and none of the old floor pattern, color or grain remains.\n';
   for (const p of cat.products.filter((x) => x.category === 'flooring')) {
     const pr = buildPrompt('kitchen', { floor: p.description }, { catalogSlots: new Set(['floor']) });
-    assert.ok(pr.includes(`- Floor: replace the existing floor entirely with ${p.description}; remove all existing floor pattern (including any parquet or herringbone); long straight planks\n`), p.id);
+    assert.match(pr.split('\n')[1], /^Main edit - Floor: replace the entire existing floor with /, p.id);
+    assert.ok(pr.includes(END), p.id);
+    assert.ok(!/parquet|herringbone/i.test(pr), p.id);
   }
   for (const v of ['Luxury vinyl plank', 'Light wood-look', 'Large format gray tile', 'Polished concrete look']) {
     const pr = buildPrompt('kitchen', { floor: v });
-    assert.match(pr, /- Floor: replace the existing floor entirely with .+; remove all existing floor pattern \(including any parquet or herringbone\)/, v);
+    assert.match(pr, /\nMain edit - Floor: replace the entire existing floor with .+; the new floor covers every visible floor area/, v);
   }
-  assert.match(buildPrompt('kitchen', { floor: 'Large format gray tile' }), /with Large format gray tile; remove all existing floor pattern \(including any parquet or herringbone\)\n/);
-  assert.match(buildPrompt('kitchen', { floor: 'White oak herringbone' }), /with white oak hardwood flooring in a herringbone pattern; remove all existing floor pattern and finish\n/);
-  assert.match(buildPrompt('kitchen', {}), /- Floor: unchanged\n/);
+  assert.ok(buildPrompt('kitchen', { floor: 'Large format gray tile' }).includes('with Large format gray tile' + END));
+  assert.ok(buildPrompt('kitchen', { floor: 'White oak herringbone' }).includes('with white oak hardwood flooring in a herringbone pattern' + END));
 });
 
 test('X-Fal-Store-IO: 0 is sent when FAL_STORE_IO is unset, omitted only for FAL_STORE_IO=1', async () => {
@@ -131,6 +133,39 @@ test('X-Fal-Store-IO: 0 is sent when FAL_STORE_IO is unset, omitted only for FAL
   }
 });
 
+test('retention headers go out on the fal.run request and are logged with the fal request id only', async () => {
+  for (const [env, io, ttl] of [[{}, '0', 3600], [{ FAL_STORE_IO: '1', FAL_MEDIA_EXPIRATION_SEC: '0' }, undefined, null], [{ FAL_MEDIA_EXPIRATION_SEC: '600' }, '0', 600]]) {
+    fresh(env); delete process.env.FAL_MEDIA_EXPIRATION_SEC; Object.assign(process.env, env);
+    const s = await start();
+    try {
+      let r;
+      const logs = await captureLogs(async () => { const tok = await s.token(); r = await s.req('/api/remodel/generate', { token: tok, body: { projectId: 1, room: 'kitchen', imageUrl: PNG } }); });
+      assert.equal(r.status, 200);
+      const run = s.calls.find((c) => c.kind === 'run');
+      assert.match(run.url, /^https:\/\/fal\.run\/fal-ai\/flux-pro\/kontext$/, 'sync run endpoint, not the client library');
+      assert.equal(run.headers['X-Fal-Store-IO'], io);
+      const lc = run.headers['X-Fal-Object-Lifecycle-Preference'];
+      assert.deepEqual(lc ? JSON.parse(lc) : null, ttl == null ? null : { expiration_duration_seconds: ttl });
+      const line = logs.find(([, t]) => t.startsWith('fal_run_retention'));
+      assert.ok(line, 'retention line logged');
+      assert.deepEqual(JSON.parse(line[1].slice('fal_run_retention '.length)), { id: RID, storeIo: io ?? 'omitted', mediaTtlSec: ttl });
+      assert.ok(!/https?:|fake-fal|Key /.test(line[1]), 'no URL or key in the log');
+      assert.ok(!r.text.includes(RID), 'request id never sent to the browser');
+    } finally { await s.close(); delete process.env.FAL_MEDIA_EXPIRATION_SEC; }
+  }
+});
+
+test('afterImageUrl is absolute only when PUBLIC_API_ORIGIN is a valid https origin', () => {
+  fresh();
+  const { absoluteImageUrl } = require('../remodelGenerate.cjs');
+  const p = '/api/remodel/image/abcdefghijklmnop?exp=1&sig=x';
+  delete process.env.PUBLIC_API_ORIGIN; assert.equal(absoluteImageUrl(p), p);
+  process.env.PUBLIC_API_ORIGIN = 'https://bigfoot-remodel-api.onrender.com/'; assert.equal(absoluteImageUrl(p), 'https://bigfoot-remodel-api.onrender.com' + p);
+  process.env.PUBLIC_API_ORIGIN = 'http://evil.example'; assert.equal(absoluteImageUrl(p), p);
+  process.env.PUBLIC_API_ORIGIN = 'https://a.com/x'; assert.equal(absoluteImageUrl(p), p);
+  delete process.env.PUBLIC_API_ORIGIN;
+});
+
 async function captureLogs(fn) {
   const out = []; const o = { info: console.info, error: console.error, log: console.log };
   console.info = (...a) => out.push(['info', a.join(' ')]); console.error = (...a) => out.push(['error', a.join(' ')]); console.log = (...a) => out.push(['log', a.join(' ')]);
@@ -138,9 +173,24 @@ async function captureLogs(fn) {
   return out;
 }
 
-test('confirmed delete logs fal_payload_delete_ok {id, files}; failure ALERT carries id; no URL or key', async () => {
+test('store-IO 0 (default): delete call is skipped with an info log carrying the id, even if delete would 403', async () => {
+  fresh(); const s = await start({ del: { ok: false, status: 403, json: async () => ({}) } });
+  try {
+    const logs = await captureLogs(async () => {
+      const tok = await s.token();
+      assert.equal((await s.req('/api/remodel/generate', { token: tok, body: { projectId: 1, room: 'kitchen', imageUrl: PNG } })).status, 200);
+    });
+    assert.equal(s.calls.filter((c) => c.kind === 'delete').length, 0, 'no delete call');
+    const line = logs.find((l) => l[1].startsWith('fal_payload_delete_skipped'));
+    assert.equal(line[0], 'info');
+    assert.deepEqual(JSON.parse(line[1].slice('fal_payload_delete_skipped '.length)), { id: RID, storeIo: '0' });
+    assert.ok(!logs.some((l) => /ALERT/.test(l[1])), 'no ALERT');
+  } finally { await s.close(); }
+});
+
+test('store-IO 1: confirmed delete logs fal_payload_delete_ok {id, files}; failure ALERT carries id; no URL or key', async () => {
   for (const [del, want] of [[undefined, 'fal_payload_delete_ok'], [{ ok: false, status: 403, json: async () => ({}) }, 'ALERT fal_payload_delete_failed']]) {
-    fresh(); const s = await start(del ? { del } : {});
+    fresh({ FAL_STORE_IO: '1' }); const s = await start(del ? { del } : {});
     try {
       const logs = await captureLogs(async () => {
         const tok = await s.token();
@@ -153,4 +203,39 @@ test('confirmed delete logs fal_payload_delete_ok {id, files}; failure ALERT car
       for (const l of logs) { assert.doesNotMatch(l[1], /fake-fal|fal\.media|https?:\/\//); }
     } finally { await s.close(); }
   }
+});
+
+test('/tiers names are short display names: no SKUs, case sizes or dimensions-with-SKU', async () => {
+  fresh(); const s = await start();
+  try {
+    const r = await s.req('/api/remodel/tiers', { method: 'GET' });
+    const opts = r.json.categories.flatMap((c) => c.options).filter((o) => o.available);
+    assert.equal(opts.length, 17);
+    for (const o of opts) {
+      assert.ok(o.name && o.name.length <= 40, o.id);
+      assert.doesNotMatch(o.name, /\b[A-Z0-9]+-[A-Z0-9-]{2,}\b|\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b|sq\.? ?ft|\/case|\(/, o.id);
+    }
+  } finally { await s.close(); }
+});
+
+test('original 10-29 products use Research visual descriptions in the prompt', () => {
+  const byId = Object.fromEntries(cat.products.map((p) => [p.id, p]));
+  for (const id of ['flooring.good', 'flooring.better', 'flooring.best', 'cabinets.good', 'countertops.good', 'backsplash.good', 'backsplash.better', 'vanity.good', 'vanity.better', 'vanity.best', 'tub_shower.good']) {
+    assert.ok(byId[id].visual_source || byId[id].verification.startsWith('gap-fill'), id);
+    assert.doesNotMatch(byId[id].description, /\b(I96711LP3|50296|C1134|KB36-UF|TOP157198|RE15412MODHD1P2|29264-BD1-0|BVS2-C5143-WH)\b/, id);
+  }
+  assert.match(byId['flooring.good'].description, /^Brown oak-look vinyl plank/);
+});
+
+test('QA P3: display names never end in a SKU or model number', () => {
+  fresh();
+  const { cleanDisplayName, publicCatalog, loadCatalog } = require('../productCatalog.cjs');
+  assert.equal(cleanDisplayName('Lifeproof Fresh Oak vinyl plank I96711LP3'), 'Lifeproof Fresh Oak vinyl plank');
+  assert.equal(cleanDisplayName('Hampton Bay recessed-panel KB36-UF'), 'Hampton Bay recessed-panel');
+  assert.equal(cleanDisplayName('Thinscape Black Amani composite TSTB-TS404-LR-25X96'), 'Thinscape Black Amani composite');
+  assert.equal(cleanDisplayName('Lifeproof LVP (20.1 sq ft/case) I96711LP3'), 'Lifeproof LVP');
+  assert.equal(cleanDisplayName('Doveton 36 in. white single'), 'Doveton 36 in. white single');
+  const names = JSON.stringify(publicCatalog(loadCatalog()));
+  for (const sku of ['I96711LP3', 'KB36-UF', 'TSTB-TS404-LR-25X96']) assert.ok(!names.includes(sku), sku);
+  for (const m of names.matchAll(/"name":"([^"]+)"/g)) assert.ok(!/\s(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(m[1]), m[1]);
 });

@@ -44,40 +44,48 @@
    "category": "flooring",
    "tier": "good",
    "name": "Lifeproof Fresh Oak 30 MIL x 8.7 in. W x 48 in. L Click Lock Waterproof LVP (20.1 sq ft/case) I96711LP3",
-   "description": "Lifeproof Fresh Oak 30 MIL x 8.7 in. W x 48 in. L Click Lock Waterproof LVP",
+   "description": "Brown oak-look vinyl plank, embossed low-gloss surface, wide 8.7 in. straight planks, micro-beveled edges, classic style",
    "source_url": "https://www.homedepot.com/p/Lifeproof-Fresh-Oak-30-MIL-x-8-7-in-W-x-48-in-L-Click-Lock-Waterproof-Luxury-Vinyl-Plank-Flooring-20-1-sq-ft-case-I96711LP3/326107553",
    "item_id": "326107553",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Lifeproof Fresh Oak vinyl plank"
   },
   {
    "id": "flooring.better",
    "category": "flooring",
    "tier": "better",
    "name": "Home Decorators Collection Natural White Oak 3/8 in. x 7.5 in. T&G Wire Brushed Engineered Hardwood (42.948 sq ft/case) 50296",
-   "description": "Home Decorators Collection Natural White Oak 3/8 in. x 7.5 in. T&G Wire Brushed Engineered Hardwood",
+   "description": "Real white oak, light natural/beige color, wire-brushed texture, low gloss, wide random-length planks with knots and mineral streaks, rustic-refined look",
    "source_url": "https://www.homedepot.com/p/Home-Decorators-Collection-Natural-White-Oak-3-8-in-T-x-7-5-in-W-Tongue-Groove-Wire-Brushed-Engineered-Hardwood-Flooring-42-948-sq-ft-case-50296/329987531",
    "item_id": "329987531",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Natural White Oak engineered hardwood"
   },
   {
    "id": "flooring.best",
    "category": "flooring",
    "tier": "best",
    "name": "Bruce Plano Marsh Oak 3/4 in. x 3-1/4 in. Solid Hardwood (22 sq ft/ctn) C1134",
-   "description": "Bruce Plano Marsh Oak 3/4 in. x 3-1/4 in. Solid Hardwood",
+   "description": "Solid oak, medium-brown \"Marsh\" stain, high-gloss smooth finish, narrow 3-1/4 in. strips with beveled edges, character grade (knots, streaks), farmhouse/rustic style",
    "source_url": "https://www.homedepot.com/p/Bruce-Plano-Marsh-Oak-3-4-in-T-x-3-1-4-in-W-x-Varying-Length-Solid-Hardwood-Flooring-22-sq-ft-Ctn-C1134/202254700",
    "item_id": "202254700",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Bruce Plano Marsh Oak solid hardwood"
   },
   {
    "id": "cabinets.good",
    "category": "cabinets",
    "tier": "good",
    "name": "Hampton Bay Recessed Panel 36 in. W x 24 in. D x 34.5 in. H Assembled Base Kitchen Cabinet, Unfinished KB36-UF",
-   "description": "Hampton Bay Recessed Panel 36 in. W x 24 in. D x 34.5 in. H Assembled Base Kitchen Cabinet, Unfinished",
+   "description": "Unfinished raw beech recessed-panel (Shaker-type) doors, face frame, partial overlay, 2 doors and 1 drawer, light natural wood (paint or stain yourself)",
    "source_url": "https://www.homedepot.com/p/Hampton-Bay-36-in-W-x-24-in-D-x-34-5-in-H-Assembled-Base-Kitchen-Cabinet-in-Unfinished-with-Recessed-Panel-KB36-UF/302970327",
    "item_id": "302970327",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Hampton Bay unfinished recessed-panel"
   },
   {
    "id": "cabinets.better",
@@ -88,7 +96,8 @@
    "source_url": "https://www.homedepot.com/p/Hampton-Bay-Denver-White-Painted-Shaker-Stock-Assembled-Base-Kitchen-Cabinet-36-in-x34-5-in-x24-in-AHKD-B36/309227086",
    "item_id": "309227086",
    "verification": "gap-fill rev3 2026-10-31",
-   "tierLabel": "Better (stock)"
+   "tierLabel": "Better (stock)",
+   "displayName": "Hampton Bay Denver white Shaker"
   },
   {
    "id": "cabinets.best",
@@ -99,17 +108,20 @@
    "source_url": "https://www.homedepot.com/p/Plywell-Shaker-Assembled-36-in-x-34-5-in-x-24-in-Base-Cabinet-with-2-Doors-and-2-Drawers-in-Charcoal-Black-CB-B36/332881030",
    "item_id": "332881030",
    "verification": "gap-fill rev3 2026-10-31",
-   "tierLabel": "Best (stock)"
+   "tierLabel": "Best (stock)",
+   "displayName": "Plywell charcoal black Shaker"
   },
   {
    "id": "countertops.good",
    "category": "countertops",
    "tier": "good",
    "name": "Hampton Bay 8 ft. Straight Laminate Countertop, Textured Calcutta Marble, Eased Edge, Integrated Backsplash TOP157198",
-   "description": "Hampton Bay 8 ft. Straight Laminate Countertop, Textured Calcutta Marble, Eased Edge, Integrated Backsplash",
+   "description": "White marble-look laminate (Wilsonart) with gray and taupe angular veins, textured finish, full-wrap eased edge, 3 in. integrated backsplash",
    "source_url": "https://www.homedepot.com/p/Hampton-Bay-8-ft-Straight-Laminate-Countertop-in-Textured-Calcutta-Marble-with-Eased-Edge-and-Integrated-Backsplash-TOP157198/327607668",
    "item_id": "327607668",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Calcutta Marble-look laminate"
   },
   {
    "id": "countertops.better",
@@ -119,27 +131,32 @@
    "description": "Black marble-look engineered composite (Wilsonart), satin finish, 1/2 in. thin profile, square edge, 4 in. backsplash included, in-stock prefab. Not quartz.",
    "source_url": "https://www.homedepot.com/p/THINSCAPE-8-ft-L-x-25-in-D-Engineered-Composite-Countertop-in-Black-Amani-with-Satin-Finish-TSTB-TS404-LR-25X96/316373066",
    "item_id": "316373066",
-   "verification": "gap-fill rev3 2026-10-31"
+   "verification": "gap-fill rev3 2026-10-31",
+   "displayName": "Thinscape Black Amani composite"
   },
   {
    "id": "backsplash.good",
    "category": "backsplash",
    "tier": "good",
    "name": "Daltile Restore Bright White 4 in. x 12 in. Glazed Ceramic Subway Wall Tile (10.64 sq ft/case) RE15412MODHD1P2",
-   "description": "Daltile Restore Bright White 4 in. x 12 in. Glazed Ceramic Subway Wall Tile",
+   "description": "Bright white glazed ceramic subway tile (actual 4-1/4 x 12-7/8 in.), glossy high sheen, uniform tone, classic/modern/transitional style",
    "source_url": "https://www.homedepot.com/p/Daltile-Restore-Bright-White-4-in-x-12-in-Glazed-Ceramic-Subway-Wall-Tile-10-64-sq-ft-case-RE15412MODHD1P2/311781598",
    "item_id": "311781598",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Daltile bright white subway"
   },
   {
    "id": "backsplash.better",
    "category": "backsplash",
    "tier": "better",
    "name": "MSI Carrara White 2 in. Hexagon 12 in. x 12 in. x 0.31 in. Honed Marble Mesh-Mounted Mosaic Tile (9.8 sq. ft./case) CAR-2HEXH",
-   "description": "Italian Carrara marble, soft white with gray veining, 2 in. hexagon (honeycomb) pattern, honed matte finish, mesh-mounted, classic",
+   "description": "Italian Carrara marble, soft white with gray veining, 2 in. hexagon honeycomb pattern, honed matte finish, mesh-mounted, classic",
    "source_url": "https://www.homedepot.com/p/MSI-Carrara-White-2-in-Hexagon-12-in-x-12-in-x-0-31-in-Honed-Marble-Mesh-Mounted-Mosaic-Tile-9-8-sq-ft-case-CAR-2HEXH/310217672",
    "item_id": "310217672",
-   "verification": "gap-fill rev3 2026-10-31 (reloaded and verified)"
+   "verification": "gap-fill rev3 2026-10-31 (reloaded and verified)",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Carrara marble hexagon mosaic"
   },
   {
    "id": "backsplash.best",
@@ -149,47 +166,56 @@
    "description": "Warm white or off-white glass 2x6 subway mosaic with iridescent shimmer, glossy, brick-joint pattern.",
    "source_url": "https://www.homedepot.com/p/MSI-Pearla-Subway-12-in-x-12-in-x-0-24-in-Glass-Mesh-Mounted-Mosaic-Wall-Tile-14-25-sq-ft-Case-GLSST-PEA6MMC/320959114",
    "item_id": "320959114",
-   "verification": "gap-fill rev3 2026-10-31"
+   "verification": "gap-fill rev3 2026-10-31",
+   "displayName": "Pearla iridescent glass subway"
   },
   {
    "id": "vanity.good",
    "category": "vanity",
    "tier": "good",
    "name": "Home Decorators Collection Doveton 36 in. Single Sink White Vanity w/ Engineered Marble Top (Assembled) Doveton 36W",
-   "description": "Home Decorators Collection Doveton 36 in. Single Sink White Vanity w/ Engineered Marble Top Doveton 36W",
+   "description": "White painted MDF freestanding vanity, traditional style, 2 doors and 1 tilt-down drawer, white engineered-marble top with rectangular undermount sink, black or brushed nickel hardware",
    "source_url": "https://www.homedepot.com/p/Home-Decorators-Collection-Doveton-36-in-Single-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-36W/324252476",
    "item_id": "324252476",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Doveton 36 in. white single"
   },
   {
    "id": "vanity.better",
    "category": "vanity",
    "tier": "better",
    "name": "Home Decorators Collection Doveton 60 in. Double Sink Weathered Tan Vanity w/ Engineered Marble Top (Assembled) Doveton 60WT",
-   "description": "Home Decorators Collection Doveton 60 in. Double Sink Weathered Tan Vanity w/ Engineered Marble Top Doveton 60WT",
+   "description": "Weathered tan (warm, natural wood-tone) MDF freestanding double vanity, traditional style, 4 doors and 5 drawers, white engineered-marble top with 2 undermount sinks, black or brushed nickel hardware",
    "source_url": "https://www.homedepot.com/p/Home-Decorators-Collection-Doveton-60-in-Double-Sink-Freestanding-Weathered-Tan-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-60WT/321491136",
    "item_id": "321491136",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Doveton 60 in. weathered tan double"
   },
   {
    "id": "vanity.best",
    "category": "vanity",
    "tier": "best",
    "name": "KOHLER Charlemont 72 in. Double Sink White Vanity with White Quartz Top 29264-BD1-0",
-   "description": "KOHLER Charlemont 72 in. Double Sink White Vanity with White Quartz Top",
+   "description": "White solid wood and moisture-resistant MDF freestanding vanity, midcentury-modern lines with raised-center door and drawer panels, squared nickel pulls, white quartz top, 2 undermount sinks",
    "source_url": "https://www.homedepot.com/p/KOHLER-Charlemont-72-in-Double-Sink-Freestanding-White-Bath-Vanity-with-White-Quartz-Top-29264-BD1-0/329442068",
    "item_id": "329442068",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "KOHLER Charlemont 72 in. white double"
   },
   {
    "id": "tub_shower.good",
    "category": "tub_shower",
    "tier": "good",
    "name": "Delta Classic 500 30 x 60 x 72 in. 4-Piece Alcove Shower Kit (walls + pan), High Gloss White BVS2-C5143-WH",
-   "description": "Delta Classic 500 30 x 60 x 72 in. 4-Piece Alcove Shower Kit , High Gloss White",
+   "description": "High-gloss white polystyrene walls (3 pieces) with built-in shelves, low-threshold center-drain base, smooth panels, no tile pattern",
    "source_url": "https://www.homedepot.com/p/Delta-Classic-500-30-in-L-x-60-in-W-x-72-in-H-4-Piece-Alcove-Shower-Kit-with-Shower-Wall-and-Shower-Pan-in-High-Gloss-White-BVS2-C5143-WH/321606375",
    "item_id": "321606375",
-   "verification": "verified: WebFetch of product page 2026-10-29"
+   "verification": "verified: WebFetch of product page 2026-10-29",
+   "visual_source": "PRODUCTS-VISUALS-10-29.md (checked 2026-10-31)",
+   "displayName": "Delta Classic 500 alcove shower kit"
   },
   {
    "id": "tub_shower.better",
@@ -199,7 +225,8 @@
    "description": "Tub-to-shower conversion: white porcelain-steel low-threshold pan, square chrome drain, white composite subway-look walls, semi-frameless brushed nickel bypass door",
    "source_url": "https://www.homedepot.com/p/sets/Aloha-60-in-x-32-in-Shower-Pan-NexTile-60-in-x-32-in-x-74-in-Wall-Kit-56-60-in-Sliding-Door-Combo/340877041",
    "item_id": "340877041",
-   "verification": "gap-fill rev3 2026-10-31"
+   "verification": "gap-fill rev3 2026-10-31",
+   "displayName": "Bootz Aloha tub-to-shower conversion"
   },
   {
    "id": "tub_shower.best",
@@ -209,7 +236,8 @@
    "description": "8 mm clear tempered glass frameless sliding door, chrome hardware, white acrylic center-drain base. No walls; built for tiled walls.",
    "source_url": "https://www.homedepot.com/p/MAAX-Halo-36-in-x-48-in-x-81-3-4-in-Frameless-Sliding-Shower-Kit-with-Center-Drain-Base-in-White-105980-000-001-100/204372996",
    "item_id": "204372996",
-   "verification": "gap-fill rev3 2026-10-31"
+   "verification": "gap-fill rev3 2026-10-31",
+   "displayName": "MAAX Halo frameless glass shower"
   }
  ],
  "quoteOnly": [
