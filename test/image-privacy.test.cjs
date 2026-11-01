@@ -55,7 +55,7 @@ test('render is copied private, fal URL never returned, fal payload deleted, sig
     assert.equal(img.headers.get('content-type'), 'image/jpeg');
     assert.match(img.headers.get('cache-control'), /no-store/);
     assert.deepEqual(Buffer.from(await img.arrayBuffer()), JPG);
-    const bad = await fetch(s.base + g.json.afterImageUrl.replace(/sig=./, 'sig=A'));
+    const bad = await fetch(s.base + g.json.afterImageUrl.replace(/sig=(.)/, (_, c) => 'sig=' + (c === 'A' ? 'B' : 'A')));
     assert.equal(bad.status, 403);
   } finally { await s.close(); }
 });
