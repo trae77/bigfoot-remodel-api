@@ -85,6 +85,8 @@ function engineTimeoutMs() { const n = Number((process.env.REMODEL_ENGINE_TIMEOU
 function renderMaxUsd() { const n = Number((process.env.REMODEL_RENDER_MAX_USD || '').trim()); return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.5; }
 /** REMODEL_REGION_MODE=cabinets-only (regions ON only): edit just the cabinets; floor, counters, walls, backsplash untouched. */
 function cabinetsOnly() { return regionsOn() && (process.env.REMODEL_REGION_MODE || '').trim().toLowerCase() === 'cabinets-only'; }
+/** REMODEL_ROOM_PRESETS (regions ON only): bathroom, living, bedroom get their own region plans. Default OFF. */
+function presetsOn() { return regionsOn() && ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_ROOM_PRESETS || '').trim().toLowerCase()); }
 function regionsOn() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_REGIONS || '').trim().toLowerCase()); }
 const FAL_MODEL = FAL_MODELS.pro.id;
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
@@ -112,7 +114,7 @@ const MAX_PROMPT_CHARS = 1200;
 const MAX_FINISH_CHARS = 100;
 const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 // Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
-const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
+const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry', 'living', 'bedroom']);
 /** Free-text finishes are material words only: no money talk and no instructions to the model. */
 // Checked on the raw text (word boundaries, so 'free-form', 'cost-effective', 'price-matched', 'prompt gray' pass)
 // and on a squashed copy with spaces/hyphens/dots removed (catches 'i g n o r e', 'ig-nore').
@@ -150,7 +152,7 @@ function finishDenied(t) {
   if (FINISH_DENY_SQUASHED_RE.test(squashed)) return true;
   return /ignore|disregard|forget|watermark|systemprompt|instruction/i.test(deLeet(squashed));
 }
-const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
+const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash', 'builtins', 'closet_doors'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
 const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
 
@@ -333,6 +335,10 @@ function planCalls(v) {
   if (regionsOn()) {
     const fromCat = v.catalogSlots instanceof Set ? v.catalogSlots : new Set();
     const phrase = (r, x) => (r === 'floor' ? stripNegations(fromCat.has('floor') ? String(x).trim() : floorPhrase(x)) : r === 'cabinets' ? cabinetPhrase(x, fromCat.has('cabinets')) : String(x));
+    if (presetsOn() && regions.ROOM_PRESETS[v.room]) {
+      const pp = regions.planPreset(v.room, f, phrase);
+      return pp.map((c) => ({ region: c.region, prompt: c.prompt, negative: c.negative, ...(c.region === 'floor' ? { guidance_scale: floorGuidance() } : {}) }));
+    }
     const src = cabinetsOnly() ? { cabinets: f.cabinets } : f;
     if (cabinetsOnly() && (f.cabinets == null || f.cabinets === '')) return [];
     const plan = regions.planRegions(v.room, src, phrase);
@@ -404,6 +410,7 @@ function resolvedConfig() {
   return {
     twoPass: twoPassOn(),
     regions: regionsOn(),
+    roomPresets: presetsOn(),
     cabinetsOnly: cabinetsOnly(),
     declutter: declutterOn(),
     failover: Boolean(failoverEngine(engines.ENGINES.kontext)),
@@ -704,6 +711,7 @@ function createRemodelGenerateHandler(deps) {
 }
 
 module.exports = {
+  presetsOn,
   cabinetsOnly,
   declutterOn,
   failoverEngine,

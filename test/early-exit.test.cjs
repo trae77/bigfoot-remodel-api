@@ -7,7 +7,7 @@ const PNG = (w, h) => { const b = Buffer.alloc(24); Buffer.from([0x89,0x50,0x4e,
 const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]);
 const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
 const ALL = { floor: 'light oak', cabinets: 'white shaker', counters: 'white quartz', walls: 'soft gray' };
-const KEYS = ['REMODEL_REGIONS', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL'];
+const KEYS = ['REMODEL_REGIONS', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_ROOM_PRESETS'];
 
 function stub(runs, { fail = false } = {}) {
   return async (url, init = {}) => {
@@ -177,3 +177,18 @@ test('R66-P3b NO_MASK on the first call releases everything: 503, caps and token
     assert.equal((await gen(s.base, t, { counters: 'granite' })).status, 200);
   } finally { regions.heuristicMask = orig; await s.close(); }
 });
+
+for (const [room, finishes, n] of [['bathroom', { floor: 'gray porcelain tile', walls: 'white subway wall tile' }, 2], ['living', { floor: 'oak', walls: 'warm white', builtins: 'navy shelving' }, 3], ['bedroom', { floor: 'carpet', walls: 'sage', closet_doors: 'white shaker doors' }, 3]]) {
+  test(`room preset ${room}: ${n} fal calls, each cap-counted; per-IP cap refuses the over-cap render`, async () => {
+    const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_ROOM_PRESETS: '1', REMODEL_PER_IP_DAILY: String(n) });
+    try {
+      const h = (t) => ({ Origin: ORIGIN, Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' });
+      const body = JSON.stringify({ projectId: 1, room, image_url: PNG(1600, 900), finishes });
+      let r = await fetch(s.base + '/api/remodel/generate', { method: 'POST', headers: h(await token(s.base)), body });
+      assert.equal(r.status, 200); assert.equal(runs.length, n);
+      for (const x of runs) assert.match(x.body.prompt, /Keep all appliances and objects not in the target regions unchanged/);
+      r = await fetch(s.base + '/api/remodel/generate', { method: 'POST', headers: h(await token(s.base)), body });
+      assert.equal(r.status, 429); assert.equal(runs.length, n, 'no extra fal call once the count cap is spent');
+    } finally { await s.close(); }
+  });
+}

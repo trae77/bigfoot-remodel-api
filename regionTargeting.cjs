@@ -72,7 +72,7 @@ function planRegions(room, finishes, phrase = (_r, v) => String(v)) {
 // Bands are fractions of image height for a typical eye-level kitchen photo. Crude by design: an
 // engine that segments for itself (Kontext, Gemini) ignores masks. Tables sit mostly in the middle band,
 // so the counters band is narrow and the floor band starts low.
-const MASK_BANDS = { declutter: [0.3, 1.0], floor: [0.72, 1.0], cabinets: [0.15, 0.85], counters: [0.5, 0.6], finishes: [0, 1] };
+const MASK_BANDS = { vanity: [0.4, 0.9], tub_shower: [0.05, 0.9], walls: [0, 0.75], builtins: [0.1, 0.85], closet_doors: [0.05, 0.9], declutter: [0.3, 1.0], floor: [0.72, 1.0], cabinets: [0.15, 0.85], counters: [0.5, 0.6], finishes: [0, 1] };
 
 // ---- 'Empty the room' pre-pass (REMODEL_DECLUTTER). Removes loose items and free-standing furniture first,
 // so the region passes never see a table they could turn into countertop. Structure is kept.
@@ -94,6 +94,54 @@ function declutterCall(room) {
 
 // Prefix for the failover engine (Qwen): it drifts layout more than Kontext, so the structure is pinned first.
 const STRUCTURE_GUARD = 'Keep the exact layout, camera angle, walls and windows of this photo. Edit only inside the masked area.';
+
+// ---- Room presets (REMODEL_ROOM_PRESETS, default OFF; kitchen keeps the plan above). No exterior/siding (dropped). ----
+const ROOM_PRESETS = {
+  bathroom: {
+    keepObjects: 'Do not change the toilet, mirror, faucets, towels, lights or decor: keep their exact shape, material and color',
+    regions: {
+      vanity: { label: 'the bathroom vanity cabinet and its top', keep: 'floor, shower or tub, wall tile, toilet, mirror, fixtures and camera angle', negative: ['toilet changed', 'mirror changed', 'layout changed'] },
+      floor: { label: 'the bathroom floor tile', keep: 'vanity, shower or tub, wall tile, toilet, fixtures and camera angle', negative: ['stripes', 'banding', 'painted lines', 'toilet changed'], floorGuard: true },
+      tub_shower: { label: 'the shower and tub surround tile and glass', keep: 'vanity, floor, toilet, mirror, fixtures and camera angle', negative: ['fixtures moved', 'toilet changed', 'window changed'] },
+      walls: { label: 'the wall tile and wall finish outside the shower', keep: 'vanity, floor, shower or tub, toilet, mirror, fixtures and camera angle', negative: ['mirror changed', 'fixtures moved'] },
+    },
+  },
+  living: {
+    keepObjects: 'Do not change any sofa, couch, armchair, coffee table, TV, rug, lamp, shelves contents or decor: keep their exact shape, material and color',
+    regions: {
+      floor: { label: 'the floor', keep: 'walls, built-ins, windows, sofas, chairs, tables and camera angle', negative: ['stripes', 'banding', 'painted lines', 'sofa changed', 'rug changed'], floorGuard: true },
+      walls: { label: 'the wall paint', keep: 'floor, built-ins, windows, sofas, chairs, tables, art and camera angle', negative: ['sofa changed', 'art changed', 'windows changed'] },
+      builtins: { label: 'the built-in shelving, cabinetry and fireplace surround only', keep: 'floor, walls, windows, sofas, chairs, tables and the items on the shelves', negative: ['sofa changed', 'shelf items changed', 'new built-ins added'] },
+    },
+  },
+  bedroom: {
+    keepObjects: 'Do not change the bed, bedding, headboard, nightstands, dresser, chairs, lamps, rug or decor: keep their exact shape, material and color',
+    regions: {
+      floor: { label: 'the floor', keep: 'walls, closet doors, windows, the bed and all furniture and camera angle', negative: ['stripes', 'banding', 'painted lines', 'bed changed', 'rug changed'], floorGuard: true },
+      walls: { label: 'the wall paint', keep: 'floor, closet doors, windows, the bed and all furniture, art and camera angle', negative: ['bed changed', 'art changed'] },
+      closet_doors: { label: 'the closet doors only', keep: 'floor, walls, windows, the bed and all furniture and camera angle', negative: ['bed changed', 'closet moved', 'new doors added'] },
+    },
+  },
+};
+const PRESET_ROOMS = Object.keys(ROOM_PRESETS);
+/** Region plan for a non-kitchen preset: one call per chosen region, in preset order. */
+function planPreset(room, finishes, phrase = (_r, v) => String(v)) {
+  const pre = ROOM_PRESETS[room]; if (!pre) return null;
+  const f = finishes || {};
+  const label = room === 'living' ? 'living room' : room;
+  return Object.entries(pre.regions).filter(([r]) => present(f[r])).map(([r, spec]) => ({
+    region: r,
+    prompt: [
+      `Edit this photo of a ${label}.`,
+      `Change only ${spec.label}: make it ${phrase(r, f[r])}.`,
+      ...(spec.floorGuard ? [`The floor must be ${FLOOR_GUARD}.`] : []),
+      `Keep ${spec.keep} exactly as in the photo.`,
+      `${KEEP_OTHERS}. ${pre.keepObjects}. ${NO_ADD}.`,
+      'Output one photoreal still.',
+    ].join('\n'),
+    negative: spec.negative.slice(),
+  }));
+}
 
 function crc32(buf) {
   let c = ~0; for (let i = 0; i < buf.length; i++) { c ^= buf[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); }
@@ -117,4 +165,4 @@ function bandMask(w, h, [top, bottom]) {
 }
 function heuristicMask(region, w, h) { return bandMask(w, h, MASK_BANDS[region] || MASK_BANDS.finishes); }
 
-module.exports = { declutterCall, DECLUTTER_NEGATIVE, STRUCTURE_GUARD, KEEP_OTHERS, REGION_ORDER, RIDE_ALONG, REGION_SPEC, EXCLUDE, FLOOR_GUARD, MASK_BANDS, planRegions, bandMask, heuristicMask, crc32 };
+module.exports = { ROOM_PRESETS, PRESET_ROOMS, planPreset, declutterCall, DECLUTTER_NEGATIVE, STRUCTURE_GUARD, KEEP_OTHERS, REGION_ORDER, RIDE_ALONG, REGION_SPEC, EXCLUDE, FLOOR_GUARD, MASK_BANDS, planRegions, bandMask, heuristicMask, crc32 };
