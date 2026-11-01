@@ -101,10 +101,17 @@ const LEET = { 0: 'o', 1: 'i', 3: 'e', 4: 'a', 5: 's', 7: 't', '@': 'a', '!': 'i
 function deLeet(t) { return t.replace(/[013457@!|]/g, (c) => LEET[c]); }
 function finishDenied(t) {
   // Allowed compounds are removed first; any other free/cost/price word is still blocked.
-  const scrubbed = t.replace(/\b(?:free-form|freeform|cost-effective|price-matched|free-standing|freestanding)\b/gi, ' ');
+  // QA P3-a (PUNCH-2e946c5): cabinet clearance terms, Euro-style, a singular weight ('2 pound') and
+  // forget-me-not are finish words. Plural 'N pounds', bare 'clearance' and 'euros' stay blocked.
+  const scrubbed = t
+    .replace(/\b(?:free-form|freeform|cost-effective|price-matched|free-standing|freestanding)\b/gi, ' ')
+    .replace(/\btoe[ -]?kick\s+clearance\b|\bclearance\s+(?:under|above|below|around|between|behind|for)\b/gi, ' ')
+    .replace(/\beuro[ -]style\b/gi, ' ')
+    .replace(/\bforget[ -]?me[ -]?not\b/gi, ' ')
+    .replace(/\b\d+(?:\.\d+)?[ -]pound\b(?!\s*(?:sterling|off|each|per|discount|price|cost))/gi, ' ');
   if (FINISH_DENY_RE.test(scrubbed)) return true;
   if (/\b(?:free|costs?|prices?)\b|\b(?:system|prompts?)\s*[:=]|\bsystem\s+(?:message|role|override)\b|\b(?:the|your|this|my|show|reveal|print)\s+prompts?\b/i.test(scrubbed)) return true;
-  const squashed = t.replace(/[\s\-_.'/]+/g, '');
+  const squashed = scrubbed.replace(/[\s\-_.'/]+/g, '');
   if (FINISH_DENY_SQUASHED_RE.test(squashed)) return true;
   return /ignore|disregard|forget|watermark|systemprompt|instruction/i.test(deLeet(squashed));
 }
