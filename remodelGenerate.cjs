@@ -7,6 +7,7 @@
 const FAL_MODEL = 'fal-ai/flux-pro/kontext';
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
 const store = require('./imageStore.cjs');
+const catalog = require('./productCatalog.cjs');
 const COST_PER_STILL_USD = 0.04;
 const MAX_GENERATES_PER_SESSION = 5;
 const MAX_SESSION_SPEND_USD = 0.25;
@@ -71,9 +72,18 @@ function validateGenerateBody(body) {
     if (t.length > MAX_FINISH_CHARS || !FINISH_RE.test(t)) return { error: `finishes.${k} is not a valid finish` };
     finishes[k] = t;
   }
+  // Good/better/best picks: ids only, resolved server-side to the verified product description.
+  const t = catalog.resolveTiers(body.tiers);
+  const catalogSlots = new Set();
+  if (t.error) return { error: t.error };
+  for (const [slot, desc] of Object.entries(t.picks)) {
+    if (FINISH_KEYS.includes(slot) && finishes[slot] != null) return { error: `Pick either a finish or a product for ${slot}` };
+    finishes[slot] = desc;
+    catalogSlots.add(slot);
+  }
   const img = validateImage(body.imageUrl ?? body.image_url);
   if (img.error) return img;
-  const prompt = buildPrompt(room, finishes);
+  const prompt = buildPrompt(room, finishes, { catalogSlots });
   if (prompt.length > MAX_PROMPT_CHARS) return { error: 'Prompt too long' };
   return { projectId, room, finishes, image_url: img.image_url, prompt };
 }
@@ -96,8 +106,24 @@ function floorPhrase(v) {
   return `wide-plank ${desc ? desc + ' ' : ''}${PLANK_TAIL}`;
 }
 
-function buildPrompt(room, finishes) {
+/**
+ * Kontext keeps an existing floor unless told to replace it (CEO proof render kept the source parquet).
+ * Every chosen floor, legacy option or catalog product, is phrased as an explicit full replacement.
+ */
+const PATTERN_RE = /\b(herringbone|parquet|basket-?weave|chevron)\b/i;
+function floorInstruction(v, fromCatalog) {
+  const target = fromCatalog ? String(v).trim() : floorPhrase(v);
+  const patterned = PATTERN_RE.test(target.replace(/no parquet or herringbone/gi, ''));
+  const planks = !patterned && /\b(plank|lvp|hardwood|vinyl|laminate|wood)\b/i.test(target);
+  const parts = [`replace the existing floor entirely with ${target}`];
+  parts.push(patterned ? 'remove all existing floor pattern and finish' : 'remove all existing floor pattern (including any parquet or herringbone)');
+  if (planks && !/long straight planks/i.test(target)) parts.push('long straight planks');
+  return parts.join('; ');
+}
+
+function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
+  const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
   const line = (v) => {
     if (v == null || v === '') return 'unchanged';
     return String(v);
@@ -107,10 +133,13 @@ function buildPrompt(room, finishes) {
     '',
     `Room type: ${room || 'kitchen'}.`,
     'Change only these finishes:',
-    `- Floor: ${f.floor == null || f.floor === '' ? 'unchanged' : floorPhrase(f.floor)}`,
+    `- Floor: ${f.floor == null || f.floor === '' ? 'unchanged' : floorInstruction(f.floor, fromCat.has('floor'))}`,
     `- Cabinet faces: ${line(f.cabinets)}`,
     `- Countertops: ${line(f.counters)}`,
     `- Wall paint/tile: ${line(f.walls)}`,
+    ...(f.backsplash ? [`- Backsplash: ${f.backsplash}`] : []),
+    ...(f.vanity ? [`- Vanity: ${f.vanity}`] : []),
+    ...(f.tub_shower ? [`- Tub/shower: ${f.tub_shower}`] : []),
     '',
     'Output a single photoreal still suitable as an AI preview.',
   ].join('\n');
@@ -146,6 +175,13 @@ function remainingGenerates(row) {
   return Math.max(0, Math.min(byCount, bySpend));
 }
 
+/** Default: send X-Fal-Store-IO: 0 so fal does not keep the request payload (fal sync docs). Only an explicit FAL_STORE_IO=1 omits it. */
+function falRunHeaders(key) {
+  const h = { Authorization: `Key ${key}`, 'Content-Type': 'application/json' };
+  if ((process.env.FAL_STORE_IO || '').trim() !== '1') h['X-Fal-Store-IO'] = '0';
+  return h;
+}
+
 /**
  * Call fal.run with the contract input shape (same fields as fal.subscribe input).
  * @param {{ prompt: string, image_url: string }} input
@@ -174,10 +210,7 @@ async function callFalKontext(input, opts = {}) {
   };
   const res = await fetchImpl(FAL_RUN_URL, {
     method: 'POST',
-    headers: {
-      Authorization: `Key ${key}`,
-      'Content-Type': 'application/json',
-    },
+    headers: falRunHeaders(key),
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -257,12 +290,13 @@ function createRemodelGenerateHandler(deps) {
         // Never block the client on fal's delete: run it after the response is sent (capped at 3 s in imageStore).
         const rid = data.__falRequestId; const key = getFalKey();
         setImmediate(() => {
+          // Server-side only, for QA delete checks: fal request id and counts. No URL, no key. Never sent to the browser.
+          const id = rid || null;
           store.deleteFalPayload(rid, key, fetchImpl).then((del) => {
-            if (del.ok) return;
-            // No URL, key or request id in the log.
-            console.error('ALERT fal_payload_delete_failed', JSON.stringify({ status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
+            if (del.ok) { console.info('fal_payload_delete_ok', JSON.stringify({ id, files: del.total ?? null })); return; }
+            console.error('ALERT fal_payload_delete_failed', JSON.stringify({ id, status: del.status || null, reason: del.reason || null, failed: del.failed ?? null }));
             if (typeof deps.onFalDeleteFail === 'function') Promise.resolve().then(() => deps.onFalDeleteFail(del)).catch(() => {});
-          }).catch(() => console.error('ALERT fal_payload_delete_failed', JSON.stringify({ reason: 'exception' })));
+          }).catch(() => console.error('ALERT fal_payload_delete_failed', JSON.stringify({ id, reason: 'exception' })));
         });
       }
       const id = deps.imageStore.put(stored.buf, stored.type);
@@ -300,6 +334,8 @@ module.exports = {
   getFalKey,
   buildPrompt,
   floorPhrase,
+  floorInstruction,
+  falRunHeaders,
   validateGenerateBody,
   validateImage,
   MAX_PROMPT_CHARS,

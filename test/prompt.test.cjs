@@ -5,7 +5,7 @@ const TAIL = 'hardwood flooring, long straight planks, no parquet or herringbone
 
 test('light oak floor uses exact wide-plank wording', () => {
   for (const v of ['Light oak', 'light oak hardwood', 'Light Oak Wood Floors']) assert.equal(floorPhrase(v), `wide-plank light oak ${TAIL}`);
-  assert.match(buildPrompt('kitchen', { floor: 'Light oak' }), /- Floor: wide-plank light oak hardwood flooring, long straight planks, no parquet or herringbone\n/);
+  assert.match(buildPrompt('kitchen', { floor: 'Light oak' }), /- Floor: replace the existing floor entirely with wide-plank light oak hardwood flooring, long straight planks, no parquet or herringbone; remove all existing floor pattern \(including any parquet or herringbone\)\n/);
 });
 
 test('other wood floors get the same plank wording', () => {
