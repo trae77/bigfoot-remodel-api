@@ -126,12 +126,12 @@ function createTokenUseTracker() {
     for (const [k, v] of map) if (v.exp * 1000 <= now) map.delete(k);
   }
   return {
-    /** Reserve one use. Returns false when the token has used its allowance. */
-    take(payload, max, now = Date.now()) {
+    /** Reserve n uses (one per fal call). Returns false, reserving nothing, when they don't all fit the allowance. */
+    take(payload, max, now = Date.now(), n = 1) {
       if (map.size > 5000) prune(now);
       const row = map.get(payload.n) || { count: 0, exp: payload.exp };
-      if (row.count >= max) return false;
-      row.count += 1;
+      if (row.count + n > max) return false;
+      row.count += n;
       map.set(payload.n, row);
       return true;
     },

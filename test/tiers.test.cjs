@@ -77,11 +77,15 @@ test('valid tier ids are accepted and the prompt uses the server-side product de
     const tok = await s.token();
     const r = await s.req('/api/remodel/generate', { token: tok, body: { projectId: 1, room: 'kitchen', imageUrl: PNG, tiers: { flooring: 'flooring.best', cabinets: 'cabinets.better', backsplash: 'backsplash.better' } } });
     assert.equal(r.status, 200, r.text);
-    const run = s.calls.find((c) => c.kind === 'run');
+    // Two-pass is the default: pass 1 is the floor only, pass 2 gets every other finish (backsplash included) on pass 1's output.
+    const runs = s.calls.filter((c) => c.kind === 'run');
+    assert.equal(runs.length, 2);
     const byId = Object.fromEntries(cat.products.map((p) => [p.id, p.description]));
-    assert.ok(run.body.prompt.includes(`Main edit - Floor: replace the entire existing floor with ${byId['flooring.best']}`));
-    assert.ok(run.body.prompt.includes(`- Cabinet faces: ${byId['cabinets.better']}`));
-    assert.ok(run.body.prompt.includes(`- Backsplash: ${byId['backsplash.better']}`));
+    assert.ok(runs[0].body.prompt.startsWith(`Change only the floor. Replace the entire existing floor with ${byId['flooring.best']}`), runs[0].body.prompt);
+    assert.ok(!runs[0].body.prompt.includes(byId['backsplash.better']) && !runs[0].body.prompt.includes(byId['cabinets.better']));
+    assert.ok(runs[1].body.prompt.includes(`- Cabinet faces: ${byId['cabinets.better']}`));
+    assert.ok(runs[1].body.prompt.includes(`- Backsplash: ${byId['backsplash.better']}`));
+    assert.ok(!runs[1].body.prompt.includes(byId['flooring.best']));
     assert.doesNotMatch(r.text, PRICE);
     assert.doesNotMatch(r.text, new RegExp(RID), 'fal request id never sent to the browser');
   } finally { await s.close(); }

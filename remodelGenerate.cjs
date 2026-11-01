@@ -16,8 +16,8 @@ function falGuidance() {
   const raw = (process.env.REMODEL_GUIDANCE || '').trim(); const g = Number(raw);
   return raw !== '' && Number.isFinite(g) && g >= 1 && g <= 20 ? g : 3.5;
 }
-/** REMODEL_TWO_PASS=1 turns on the floor-first two-call edit (R59 option A). Default off. */
-function twoPassOn() { return (process.env.REMODEL_TWO_PASS || '').trim() === '1'; }
+/** Floor-first two-call edit (R59 option A) is ON by default. Only REMODEL_TWO_PASS=0 (or false/off/no) turns it off. */
+function twoPassOn() { return !/^(0|false|off|no)$/i.test((process.env.REMODEL_TWO_PASS || '').trim()); }
 /** REMODEL_FLOOR_GUIDANCE: guidance for the floor-only pass, fal range 1-20, default 5.0. */
 function floorGuidance() {
   const raw = (process.env.REMODEL_FLOOR_GUIDANCE || '').trim(); const g = Number(raw);
@@ -66,7 +66,7 @@ const MAX_FINISH_CHARS = 100;
 const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 // Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
 const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
-const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls'];
+const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
 const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
 
@@ -274,6 +274,20 @@ function falRunHeaders(key) {
   return h;
 }
 
+/** Resolved runtime config for the startup log. Booleans and numbers only: never a key, secret or URL. */
+function resolvedConfig() {
+  const h = falRunHeaders('x');
+  return {
+    twoPass: twoPassOn(),
+    model: falModel().id,
+    guidance: falGuidance(),
+    floorGuidance: floorGuidance(),
+    storeIo: h['X-Fal-Store-IO'] ?? 'omitted',
+    mediaTtlSec: h['X-Fal-Object-Lifecycle-Preference'] ? JSON.parse(h['X-Fal-Object-Lifecycle-Preference']).expiration_duration_seconds : null,
+    publicApiOriginSet: Boolean((process.env.PUBLIC_API_ORIGIN || '').trim()),
+  };
+}
+
 /** Log line for what retention headers actually went out. No URL, no key. */
 function falRetentionLog(headers, requestId) {
   return { id: requestId || null, storeIo: headers['X-Fal-Store-IO'] ?? 'omitted', mediaTtlSec: headers['X-Fal-Object-Lifecycle-Preference'] ? JSON.parse(headers['X-Fal-Object-Lifecycle-Preference']).expiration_duration_seconds : null };
@@ -455,6 +469,8 @@ module.exports = {
   falModel,
   falGuidance,
   planCalls,
+  resolvedConfig,
+  twoPassOn,
   floorOnlyPrompt,
   imageLongSide,
   COST_PER_STILL_USD,
