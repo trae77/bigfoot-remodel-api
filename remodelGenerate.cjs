@@ -4,11 +4,20 @@
  * Authorized William t1097u — preview only. Never log FAL_KEY.
  */
 
-const FAL_MODEL = 'fal-ai/flux-pro/kontext';
+// Model and $/image from fal's model pages (fal.ai/models/fal-ai/flux-pro/kontext[/max]/llms.txt, 2026-10-31).
+const FAL_MODELS = { pro: { id: 'fal-ai/flux-pro/kontext', usd: 0.04 }, max: { id: 'fal-ai/flux-pro/kontext/max', usd: 0.08 } };
+/** REMODEL_FAL_MODEL=pro|max (default pro). Anything else falls back to pro. */
+function falModel() { return FAL_MODELS[(process.env.REMODEL_FAL_MODEL || '').trim().toLowerCase()] || FAL_MODELS.pro; }
+/** REMODEL_GUIDANCE: fal range 1-20, default 3.5. Out of range or not a number falls back to 3.5. */
+function falGuidance() {
+  const raw = (process.env.REMODEL_GUIDANCE || '').trim(); const g = Number(raw);
+  return raw !== '' && Number.isFinite(g) && g >= 1 && g <= 20 ? g : 3.5;
+}
+const FAL_MODEL = FAL_MODELS.pro.id;
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
 const store = require('./imageStore.cjs');
 const catalog = require('./productCatalog.cjs');
-const COST_PER_STILL_USD = 0.04;
+const COST_PER_STILL_USD = 0.04; // pro; use falModel().usd for the live cost
 const MAX_GENERATES_PER_SESSION = 5;
 const MAX_SESSION_SPEND_USD = 0.25;
 const HONESTY = 'AI preview — not a final design · not a bid';
@@ -127,6 +136,14 @@ function floorInstruction(v, fromCatalog) {
  * Kontext edits best with a direct instruction first and preservation stated after (BFL Kontext guide).
  * The floor is the edit it most often skips, so it leads, on its own line, ahead of the other finishes.
  */
+/** What to keep, minus anything this prompt asks to change (a51aaa6 said "keep walls" while also changing wall paint). */
+function keepList(f, hasFloor) {
+  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', 'cabinet layout', 'appliance footprints', 'fixture layout', 'room dimensions'];
+  if (!hasFloor) keep.push('the floor');
+  const last = keep.pop();
+  return `${keep.join(', ')} and ${last}`;
+}
+
 function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
@@ -140,7 +157,7 @@ function buildPrompt(room, finishes, opts = {}) {
     ...(hasFloor ? [`Main edit - Floor: ${floorInstruction(f.floor, fromCat.has('floor'))}.`] : []),
     ...(others.length ? ['Also change these finishes:', ...others.map(([k, v]) => `- ${k}: ${v}`)] : []),
     '',
-    `Keep everything else exactly as in the photo: walls, windows, camera angle, lighting, cabinet layout, appliance footprints, fixture layout and room dimensions${hasFloor ? '' : ', and the floor'}. Do not add people, text overlays, or new furniture.`,
+    `Keep everything else exactly as in the photo: ${keepList(f, hasFloor)}. Do not add people, text overlays, or new furniture.`,
     'Output a single photoreal still suitable as an AI preview.',
   ].join('\n');
 }
@@ -177,7 +194,7 @@ function getSessionBudget(key) {
 
 function remainingGenerates(row) {
   const byCount = MAX_GENERATES_PER_SESSION - row.count;
-  const bySpend = Math.floor((MAX_SESSION_SPEND_USD - row.spendUsd) / COST_PER_STILL_USD + 1e-9);
+  const bySpend = Math.floor((MAX_SESSION_SPEND_USD - row.spendUsd) / falModel().usd + 1e-9);
   return Math.max(0, Math.min(byCount, bySpend));
 }
 
@@ -222,13 +239,13 @@ async function callFalKontext(input, opts = {}) {
   const body = {
     prompt: input.prompt,
     image_url: input.image_url,
-    guidance_scale: 3.5,
+    guidance_scale: falGuidance(),
     num_images: 1,
     output_format: 'jpeg',
     safety_tolerance: '2',
   };
   const headers = falRunHeaders(key);
-  const res = await fetchImpl(FAL_RUN_URL, {
+  const res = await fetchImpl(`https://fal.run/${falModel().id}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -294,7 +311,7 @@ function createRemodelGenerateHandler(deps) {
       const data = await callFalKontext({ prompt, image_url }, { fetchImpl: deps.fetchImpl });
       // fal has billed once it returns: charge the session now, even if the download below fails.
       budget.count += 1;
-      budget.spendUsd += COST_PER_STILL_USD;
+      budget.spendUsd += falModel().usd;
       budget.updatedAt = Date.now();
       sessionSpend.set(sessionKey, budget);
 
@@ -332,7 +349,7 @@ function createRemodelGenerateHandler(deps) {
         afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
-        provider: FAL_MODEL,
+        provider: falModel().id,
         seed: data.seed ?? null,
         projectId,
       });
@@ -351,6 +368,9 @@ function createRemodelGenerateHandler(deps) {
 
 module.exports = {
   FAL_MODEL,
+  FAL_MODELS,
+  falModel,
+  falGuidance,
   COST_PER_STILL_USD,
   MAX_GENERATES_PER_SESSION,
   MAX_SESSION_SPEND_USD,
