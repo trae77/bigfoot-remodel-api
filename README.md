@@ -82,6 +82,17 @@ Unset the var to disable.
 Source: AI Bot's 12-photo test, /workspace/remodel-test/ab/t12/ (run12.py, scores_12.csv): arm A Kontext pro two-pass, arm B Fill, arm C Kontext max.
 - **Kontext pro two-pass** (default: REMODEL_TWO_PASS on, REMODEL_FAL_MODEL unset = pro): floor first, then the other finishes.
 - **Keep rugs and mats**: every prompt's keep line names rugs and mats (t12 floor passes removed a rug and bath mats); the floor guard no longer says "no rug".
-- **Hex paint**: optional `paintHex: "#RRGGBB"` on generate is appended to the walls finish ("..., paint color hex #9CAF88"). Needs a walls finish; bad hex = 400 before any count.
-- **Kontext max only on hard photos**: `hardPhoto: true` (strict boolean) routes every call of that render to fal-ai/flux-pro/kontext/max at 0.08/call. A 2-pass max render reserves 2 counts and 16 cents up front and must fit the per-render ceiling. REMODEL_MAX_ON_HARD=0 turns the route off. Env can never select max.
-- **Fill dropped**: REMODEL_REGION_ENGINE=fill runs Kontext unless REMODEL_FILL_ENABLE=1 is also set (plus a valid REMODEL_FILL_USD).
+- **Recipe spec (AI Bot, 2026-11-02, `recipe-spec.md`)**:
+  - **Base keep-list on every call**: all appliances, counter items, shelf items, furniture, rugs, mats, towels, lighting and windows are kept; "change only the {targets}".
+  - **Hard photo** = `hardPhoto: true` (strict boolean, default false) OR the worker's own signals, computed with sharp at 256 px before any cap or paid call: busy_dark (edge >= `HARD_EDGE_MIN` 0.17 AND dark share >= `HARD_DARK_MIN` 0.14), panorama (aspect >= `HARD_ASPECT_MAX` 2.0, also returns a crop warning), tall_narrow (aspect <= `HARD_ASPECT_MIN` 0.70). Low light alone is not hard. Hard adds the extended keep-list ("do not remove, tidy or restyle anything; same camera framing; same floor coverings") and "clearly" wording. If that alone would push a call past 1200 chars, the base prompt is sent instead.
+  - **Engine for hard photos**: `REMODEL_HARD_ENGINE` defaults to `kontext-pro`. Kontext max (0.08/call) runs only when `REMODEL_HARD_ENGINE=kontext-max` AND `REMODEL_MAX_ON_HARD=1` (exactly '1'; anything else = off). Env can never select max for normal photos.
+  - **Paint colors**: `colorHex` (`#RRGGBB`; `paintHex` is the old name) wins over `colorText` (max 60 chars, same word filter as finishes). Text is matched to our own 30-color generic palette (`palette/palette.json`, CC0, approximate preview colors, not any manufacturer's color), then CSS named colors; no match keeps the text and returns `colorMatch: "none"`. The walls get "repaint the walls {color} ({hex}), a muted matte paint".
+  - **Brand aliases OFF**: `PALETTE_BRAND_ALIASES` is off unless exactly '1'. Off, brand color names are dropped from the text before matching, so they never reach the prompt or the response. Colors are approximate previews, not manufacturer matches.
+  - **Response `meta`**: `hard`, `hardReasons`, `signals` (w, h, aspect, darkFrac, edgeDensity), `engine`, `warning`, `colorMatch`, `colorId`, `colorHexUsed`.
+- **Fill dropped**: REMODEL_REGION_ENGINE=fill runs Kontext unless REMODEL_FILL_ENABLE is exactly '1' (plus a valid REMODEL_FILL_USD).
+
+## Flags and image-safety notes (QA punch PR #15)
+- Strict flags (`REMODEL_MAX_ON_HARD`, `REMODEL_FILL_ENABLE`, `PALETTE_BRAND_ALIASES`): ON only when the value is exactly `1` after trimming whitespace. `true`, `yes`, `01`, unset = OFF.
+- Kontext max on hard photos is **OFF in prod** unless BOTH `REMODEL_MAX_ON_HARD=1` AND `REMODEL_HARD_ENGINE=kontext-max` are set (behaviour change: before PR #15 max-on-hard defaulted on). Otherwise hard photos use kontext-pro.
+- `meta.colorMatch` is `brand_dropped` when colorText was only a paint-brand name and brand aliases are off; it is ignored (no phrase).
+- Hard-photo signals (sharp ^0.35.5): magic-byte check allows only jpeg/png/webp; a header-only `metadata()` probe rejects images over 40 MP (`limitInputPixels`) before any full decode; libvips cache off, concurrency 1. Any failure = signals null (client flag only). Keeps memory bounded on Render's 512 MB plan.

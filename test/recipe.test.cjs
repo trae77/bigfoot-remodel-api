@@ -7,7 +7,7 @@ const PNG = (w, h) => { const b = Buffer.alloc(24); Buffer.from([0x89,0x50,0x4e,
 const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]);
 const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
 const ALL = { floor: 'light oak', cabinets: 'white shaker', counters: 'white quartz', walls: 'soft gray' };
-const KEYS = ['REMODEL_MAX_ON_HARD', 'REMODEL_REGIONS', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_ENABLE', 'REMODEL_FILL_USD', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_ROOM_PRESETS'];
+const KEYS = ['REMODEL_MAX_ON_HARD', 'REMODEL_HARD_ENGINE', 'REMODEL_REGIONS', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_ENABLE', 'REMODEL_FILL_USD', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_ROOM_PRESETS'];
 
 function stub(runs, { fail = false } = {}) {
   return async (url, init = {}) => {
@@ -53,8 +53,8 @@ test('default recipe: two-pass Kontext pro, 2 counted calls, 8 cents reserved', 
   } finally { await s.close(); }
 });
 
-test('hardPhoto: true routes both passes to Kontext max, counted at 0.08/call (16 cents) on the $ cap', async () => {
-  const runs = []; const s = await boot(stub(runs), {});
+test('hardPhoto: true routes both passes to Kontext max (only with MAX_ON_HARD=1 + HARD_ENGINE=kontext-max), 16 cents on the $ cap', async () => {
+  const runs = []; const s = await boot(stub(runs), { REMODEL_MAX_ON_HARD: '1', REMODEL_HARD_ENGINE: 'kontext-max' });
   try {
     const r = await gen(s.base, await token(s.base), TWO, PNG(1600, 900), null, { hardPhoto: true });
     assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(runs.length, 2);
@@ -64,7 +64,7 @@ test('hardPhoto: true routes both passes to Kontext max, counted at 0.08/call (1
 });
 
 test('hardPhoto max route obeys the ONE ceiling: 0.12 refuses a 2-pass max (0.16) with 400, nothing reserved, no call; pro still fits', async () => {
-  const runs = []; const s = await boot(stub(runs), { REMODEL_RENDER_MAX_USD: '0.12' });
+  const runs = []; const s = await boot(stub(runs), { REMODEL_RENDER_MAX_USD: '0.12', REMODEL_MAX_ON_HARD: '1', REMODEL_HARD_ENGINE: 'kontext-max' });
   try {
     const r = await gen(s.base, await token(s.base), TWO, PNG(1600, 900), null, { hardPhoto: true });
     assert.equal(r.status, 400); assert.equal(s.capStore.total(), 0); assert.equal(runs.length, 0);
@@ -73,7 +73,7 @@ test('hardPhoto max route obeys the ONE ceiling: 0.12 refuses a 2-pass max (0.16
 });
 
 test('hardPhoto max route respects the monthly $ cap: 0.10 cap refuses 16 cents, nothing reserved', async () => {
-  const runs = []; const s = await boot(stub(runs), { REMODEL_MONTHLY_USD_CAP: '0.10' });
+  const runs = []; const s = await boot(stub(runs), { REMODEL_MONTHLY_USD_CAP: '0.10', REMODEL_MAX_ON_HARD: '1', REMODEL_HARD_ENGINE: 'kontext-max' });
   try {
     const r = await gen(s.base, await token(s.base), TWO, PNG(1600, 900), null, { hardPhoto: true });
     assert.notEqual(r.status, 200); assert.equal(s.capStore.total(), 0); assert.equal(runs.length, 0);
@@ -113,18 +113,20 @@ test('keep rugs/mats in every prompt: legacy two-pass, regions and presets; floo
   for (const k of KEYS) delete process.env[k];
   delete require.cache[require.resolve('../remodelGenerate.cjs')]; delete require.cache[require.resolve('../regionTargeting.cjs')];
   const g = require('../remodelGenerate.cjs'); const R = require('../regionTargeting.cjs');
-  for (const c of g.planCalls({ room: 'kitchen', finishes: TWO })) assert.match(c.prompt, /rugs and mats/);
+  for (const c of g.planCalls({ room: 'kitchen', finishes: TWO })) assert.match(c.prompt, /rugs(,| and) mats/);
   for (const c of R.planRegions('kitchen', ALL)) assert.match(c.prompt, /rugs and mats/);
   for (const room of ['bathroom', 'living', 'bedroom']) for (const c of R.planPreset(room, { floor: 'gray tile', walls: 'white' })) assert.match(c.prompt, /rugs and mats/);
   assert.doesNotMatch(R.FLOOR_GUARD, /\bno rug/);
 });
 
-test('paintHex: appended to the walls finish as an exact hex; bad hex or no walls is 400 with no call', async () => {
+test('paintHex (old name for colorHex): matched to our generic color, repaints the walls with the hex; bad hex is 400 with no call', async () => {
   const runs = []; const s = await boot(stub(runs), {});
   try {
-    assert.equal((await gen(s.base, await token(s.base), { floor: 'light oak', walls: 'sage green' }, PNG(1600, 900), null, { paintHex: '#9caf88' })).status, 200);
-    assert.match(runs[1].body.prompt, /sage green, paint color hex #9CAF88/);
-    for (const [f, h] of [[{ walls: 'sage' }, '9CAF88'], [{ walls: 'sage' }, '#9CAF8'], [{ walls: 'sage' }, '#GGGGGG'], [{ walls: 'sage' }, 123], [{ floor: 'light oak' }, '#9CAF88']]) {
+    const r = await gen(s.base, await token(s.base), { floor: 'light oak', walls: 'sage green' }, PNG(1600, 900), null, { paintHex: '#9caf88' });
+    assert.equal(r.status, 200);
+    assert.match(runs[1].body.prompt, /sage green, repaint the walls \(#9CAF88\), a muted matte paint/);
+    assert.equal(r.json.meta.colorMatch, 'hex'); assert.equal(r.json.meta.colorHexUsed, '#9CAF88');
+    for (const [f, h] of [[{ walls: 'sage' }, '9CAF88'], [{ walls: 'sage' }, '#9CAF8'], [{ walls: 'sage' }, '#GGGGGG'], [{ walls: 'sage' }, 123]]) {
       assert.equal((await gen(s.base, await token(s.base), f, PNG(1600, 900), null, { paintHex: h })).status, 400, JSON.stringify([f, h]));
     }
     assert.equal(runs.length, 2);

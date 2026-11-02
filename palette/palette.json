@@ -1,0 +1,329 @@
+{
+ "version": "tta-interior-v1",
+ "license": "CC0-1.0 (TTA-defined values; not any brand's official color)",
+ "note": "Approximate preview colors chosen by TTA. Not any manufacturer's color and not a manufacturer match.",
+ "colors": [
+  {
+   "id": "warm-white",
+   "hex": "#F2EDE3",
+   "aliases": [
+    "warm white",
+    "soft white",
+    "dove white",
+    "cream white"
+   ]
+  },
+  {
+   "id": "pure-white",
+   "hex": "#F7F7F5",
+   "aliases": [
+    "white",
+    "bright white",
+    "pure white"
+   ]
+  },
+  {
+   "id": "off-white",
+   "hex": "#EDE8DC",
+   "aliases": [
+    "off white",
+    "off-white",
+    "ivory",
+    "eggshell",
+    "linen"
+   ]
+  },
+  {
+   "id": "cream",
+   "hex": "#EFE3C8",
+   "aliases": [
+    "cream",
+    "buttercream",
+    "vanilla"
+   ]
+  },
+  {
+   "id": "greige",
+   "hex": "#C9BFB0",
+   "aliases": [
+    "greige"
+   ]
+  },
+  {
+   "id": "light-gray",
+   "hex": "#D3D3CF",
+   "aliases": [
+    "light gray",
+    "light grey",
+    "pale gray",
+    "silver"
+   ]
+  },
+  {
+   "id": "mid-gray",
+   "hex": "#9E9E9A",
+   "aliases": [
+    "gray",
+    "grey",
+    "mid gray",
+    "dove gray",
+    "stone gray"
+   ]
+  },
+  {
+   "id": "charcoal",
+   "hex": "#3E4144",
+   "aliases": [
+    "charcoal",
+    "dark gray",
+    "dark grey",
+    "graphite",
+    "slate"
+   ]
+  },
+  {
+   "id": "black",
+   "hex": "#1E1E1E",
+   "aliases": [
+    "black",
+    "matte black",
+    "jet black"
+   ]
+  },
+  {
+   "id": "beige",
+   "hex": "#D8C7A8",
+   "aliases": [
+    "beige",
+    "tan",
+    "sand",
+    "khaki"
+   ]
+  },
+  {
+   "id": "taupe",
+   "hex": "#A39383",
+   "aliases": [
+    "taupe",
+    "mushroom",
+    "mocha"
+   ]
+  },
+  {
+   "id": "sage",
+   "hex": "#A3AD8F",
+   "aliases": [
+    "sage",
+    "sage green",
+    "soft green",
+    "eucalyptus"
+   ]
+  },
+  {
+   "id": "olive",
+   "hex": "#6F7350",
+   "aliases": [
+    "olive",
+    "olive green",
+    "moss"
+   ]
+  },
+  {
+   "id": "forest-green",
+   "hex": "#2F4A3A",
+   "aliases": [
+    "forest green",
+    "hunter green",
+    "dark green",
+    "emerald"
+   ]
+  },
+  {
+   "id": "mint",
+   "hex": "#CFE3D3",
+   "aliases": [
+    "mint",
+    "mint green",
+    "seafoam"
+   ]
+  },
+  {
+   "id": "navy",
+   "hex": "#24324A",
+   "aliases": [
+    "navy",
+    "navy blue",
+    "midnight blue",
+    "dark blue"
+   ]
+  },
+  {
+   "id": "slate-blue",
+   "hex": "#6E7F95",
+   "aliases": [
+    "slate blue",
+    "dusty blue",
+    "blue gray",
+    "blue grey"
+   ]
+  },
+  {
+   "id": "light-blue",
+   "hex": "#BFD3E0",
+   "aliases": [
+    "light blue",
+    "sky blue",
+    "powder blue",
+    "baby blue"
+   ]
+  },
+  {
+   "id": "teal",
+   "hex": "#2F6F73",
+   "aliases": [
+    "teal",
+    "peacock",
+    "deep teal"
+   ]
+  },
+  {
+   "id": "terracotta",
+   "hex": "#B8664A",
+   "aliases": [
+    "terracotta",
+    "rust",
+    "burnt orange",
+    "clay"
+   ]
+  },
+  {
+   "id": "blush",
+   "hex": "#E6C7C0",
+   "aliases": [
+    "blush",
+    "blush pink",
+    "pink",
+    "dusty rose"
+   ]
+  },
+  {
+   "id": "burgundy",
+   "hex": "#5E2430",
+   "aliases": [
+    "burgundy",
+    "oxblood",
+    "wine",
+    "maroon"
+   ]
+  },
+  {
+   "id": "mustard",
+   "hex": "#C99A2E",
+   "aliases": [
+    "mustard",
+    "mustard yellow",
+    "ochre",
+    "gold"
+   ]
+  },
+  {
+   "id": "butter-yellow",
+   "hex": "#F1E2A6",
+   "aliases": [
+    "yellow",
+    "butter yellow",
+    "pale yellow"
+   ]
+  },
+  {
+   "id": "natural-oak",
+   "hex": "#B98A5A",
+   "aliases": [
+    "oak",
+    "natural oak",
+    "white oak",
+    "light wood",
+    "honey oak"
+   ]
+  },
+  {
+   "id": "walnut",
+   "hex": "#5C3F2B",
+   "aliases": [
+    "walnut",
+    "dark wood",
+    "espresso",
+    "dark walnut"
+   ]
+  },
+  {
+   "id": "cherry",
+   "hex": "#7B3B2A",
+   "aliases": [
+    "cherry",
+    "mahogany",
+    "red wood"
+   ]
+  },
+  {
+   "id": "brown",
+   "hex": "#6B4E3A",
+   "aliases": [
+    "brown",
+    "chocolate",
+    "coffee"
+   ]
+  },
+  {
+   "id": "red",
+   "hex": "#A8322D",
+   "aliases": [
+    "red",
+    "barn red",
+    "brick red"
+   ]
+  },
+  {
+   "id": "lavender",
+   "hex": "#C7BFD6",
+   "aliases": [
+    "lavender",
+    "lilac",
+    "light purple"
+   ]
+  }
+ ],
+ "brandAliases": {
+  "warm-white": [
+   "white dove",
+   "alabaster"
+  ],
+  "pure-white": [
+   "extra white",
+   "chantilly"
+  ],
+  "greige": [
+   "agreeable gray",
+   "agreeable grey",
+   "accessible beige",
+   "revere pewter",
+   "edgecomb gray"
+  ],
+  "light-gray": [
+   "repose gray"
+  ],
+  "charcoal": [
+   "iron ore"
+  ],
+  "black": [
+   "tricorn black"
+  ],
+  "sage": [
+   "evergreen fog"
+  ],
+  "navy": [
+   "hale navy",
+   "naval"
+  ]
+ }
+}
