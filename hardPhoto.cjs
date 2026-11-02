@@ -10,6 +10,9 @@ const DEFAULTS = { HARD_EDGE_MIN: 0.17, HARD_DARK_MIN: 0.14, HARD_ASPECT_MAX: 2.
 const SIGNAL_WIDTH = 256;
 const DARK_LUMA = 50;
 const EDGE_ABS = 40;
+// Render free (512 MB): refuse decode bombs (signals become null, only the client flag counts) and keep no libvips cache.
+const MAX_INPUT_PIXELS = 40_000_000;
+let sharpReady = false;
 
 /** Thresholds from env; an unset, non-numeric or out-of-range value falls back to the spec default. */
 function thresholds(env = process.env) {
@@ -54,10 +57,12 @@ async function computeSignals(dataUri, sharpImpl) {
     const m = /^data:image\/(?:jpeg|png|webp);base64,(.+)$/.exec(String(dataUri || ''));
     if (!m) return null;
     const sharp = sharpImpl || require('sharp');
+    if (!sharpImpl && !sharpReady) { sharp.cache(false); sharp.concurrency(1); sharpReady = true; }
     const buf = Buffer.from(m[1], 'base64');
-    const meta = await sharp(buf).metadata();
+    const o = { limitInputPixels: MAX_INPUT_PIXELS };
+    const meta = await sharp(buf, o).metadata();
     if (!meta.width || !meta.height) return null;
-    const { data, info } = await sharp(buf).removeAlpha().resize({ width: SIGNAL_WIDTH, kernel: 'lanczos3' }).raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = await sharp(buf, o).removeAlpha().resize({ width: SIGNAL_WIDTH, kernel: 'lanczos3' }).raw().toBuffer({ resolveWithObject: true });
     return signalsFromPixels(data, info.width, info.height, info.channels, meta.width, meta.height);
   } catch (_e) {
     return null;
