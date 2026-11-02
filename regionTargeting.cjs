@@ -98,6 +98,7 @@ const STRUCTURE_GUARD = 'Keep the exact layout, camera angle, walls and windows 
 // ---- Room presets (REMODEL_ROOM_PRESETS, default OFF; kitchen keeps the plan above). No exterior/siding (dropped). ----
 const ROOM_PRESETS = {
   bathroom: {
+    rideAlong: ['walls'],
     keepObjects: 'Do not change the toilet, mirror, faucets, towels, lights or decor: keep their exact shape, material and color',
     regions: {
       vanity: { label: 'the bathroom vanity cabinet and its top', keep: 'floor, shower or tub, wall tile, toilet, mirror, fixtures and camera angle', negative: ['toilet changed', 'mirror changed', 'layout changed'] },
@@ -129,11 +130,17 @@ function planPreset(room, finishes, phrase = (_r, v) => String(v)) {
   const pre = ROOM_PRESETS[room]; if (!pre) return null;
   const f = finishes || {};
   const label = room === 'living' ? 'living room' : room;
-  return Object.entries(pre.regions).filter(([r]) => present(f[r])).map(([r, spec]) => ({
+  const ride = (pre.rideAlong || []).filter((r) => present(f[r]));
+  let picked = Object.entries(pre.regions).filter(([r]) => present(f[r]) && !(pre.rideAlong || []).includes(r));
+  // Ride-along regions (bathroom wall tile) join the last call, like kitchen walls, so a full render stays at 3 calls.
+  let extra = ride;
+  if (!picked.length && ride.length) { picked = [[ride[0], pre.regions[ride[0]]]]; extra = ride.slice(1); }
+  return picked.map(([r, spec], i) => ({
     region: r,
     prompt: [
       `Edit this photo of a ${label}.`,
       `Change only ${spec.label}: make it ${phrase(r, f[r])}.`,
+      ...(i === picked.length - 1 ? extra.map((k) => `Also change ${pre.regions[k].label}: make it ${phrase(k, f[k])}.`) : []),
       ...(spec.floorGuard ? [`The floor must be ${FLOOR_GUARD}.`] : []),
       `Keep ${spec.keep} exactly as in the photo.`,
       `${KEEP_OTHERS}. ${pre.keepObjects}. ${NO_ADD}.`,

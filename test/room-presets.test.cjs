@@ -18,11 +18,12 @@ test('no exterior/siding preset', () => {
   assert.deepEqual(R.PRESET_ROOMS.sort(), ['bathroom', 'bedroom', 'living']);
   assert.ok(!/siding|exterior/i.test(JSON.stringify(R.ROOM_PRESETS)));
 });
-test('bathroom: vanity, tile floor, surround, wall tile = 4 calls with keep lines + masks', () => {
+test('bathroom: vanity, tile floor, surround + wall tile folded into the last call = 3 calls', () => {
   const c = plan(ON, { room: 'bathroom', tiers: { flooring: 'flooring.better', vanity: 'vanity.better', tub_shower: 'tub_shower.good' }, finishes: { walls: 'white subway wall tile' } });
-  assert.deepEqual(c.map((x) => x.region), ['vanity', 'floor', 'tub_shower', 'walls']);
+  assert.deepEqual(c.map((x) => x.region), ['vanity', 'floor', 'tub_shower']);
   for (const x of c) { assert.match(x.prompt, /Keep all appliances and objects not in the target regions unchanged/); assert.match(x.prompt, /toilet/); assert.ok(R.heuristicMask(x.region, 64, 48).startsWith('data:image/png;base64,')); }
-  assert.match(c[0].prompt, /vanity/); assert.match(c[2].prompt, /shower and tub surround/); assert.match(c[3].prompt, /wall tile/);
+  assert.match(c[0].prompt, /vanity/); assert.match(c[2].prompt, /shower and tub surround/); assert.match(c[2].prompt, /Also change the wall tile/);
+  assert.ok(!/Also change/.test(c[0].prompt + c[1].prompt), 'wall tile only on the last call');
 });
 test('living: floor, walls, built-ins; sofas kept', () => {
   const c = plan(ON, { room: 'living', finishes: { floor: 'light oak planks', walls: 'warm white', builtins: 'painted navy shelving' } });
@@ -43,4 +44,12 @@ test('kitchen stays default region plan with presets ON; flag OFF = old plan for
   assert.deepEqual(k.map((x) => x.region), ['floor', 'cabinets', 'counters']);
   const off = plan({ REMODEL_REGIONS: '1' }, { room: 'bathroom', tiers: { vanity: 'vanity.better' }, finishes: { floor: 'tile' } });
   assert.ok(!off.some((x) => x.region === 'vanity'));
+});
+
+test('bathroom: wall tile alone is one call', () => {
+  const c = plan(ON, { room: 'bathroom', finishes: { walls: 'white subway wall tile' } });
+  assert.deepEqual(c.map((x) => x.region), ['walls']); assert.ok(!/Also change/.test(c[0].prompt));
+});
+test('every preset full render is at most 3 calls', () => {
+  assert.equal(plan(ON, { room: 'bathroom', tiers: { flooring: 'flooring.better', vanity: 'vanity.better', tub_shower: 'tub_shower.good' }, finishes: { walls: 'tile' } }).length, 3);
 });

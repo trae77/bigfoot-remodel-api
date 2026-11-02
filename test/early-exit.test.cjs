@@ -178,7 +178,7 @@ test('R66-P3b NO_MASK on the first call releases everything: 503, caps and token
   } finally { regions.heuristicMask = orig; await s.close(); }
 });
 
-for (const [room, finishes, n] of [['bathroom', { floor: 'gray porcelain tile', walls: 'white subway wall tile' }, 2], ['living', { floor: 'oak', walls: 'warm white', builtins: 'navy shelving' }, 3], ['bedroom', { floor: 'carpet', walls: 'sage', closet_doors: 'white shaker doors' }, 3]]) {
+for (const [room, finishes, n] of [['bathroom', { floor: 'gray porcelain tile', walls: 'white subway wall tile' }, 1], ['living', { floor: 'oak', walls: 'warm white', builtins: 'navy shelving' }, 3], ['bedroom', { floor: 'carpet', walls: 'sage', closet_doors: 'white shaker doors' }, 3]]) {
   test(`room preset ${room}: ${n} fal calls, each cap-counted; per-IP cap refuses the over-cap render`, async () => {
     const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_ROOM_PRESETS: '1', REMODEL_PER_IP_DAILY: String(n) });
     try {
@@ -192,3 +192,15 @@ for (const [room, finishes, n] of [['bathroom', { floor: 'gray porcelain tile', 
     } finally { await s.close(); }
   });
 }
+
+test('full bathroom preset (vanity, floor, surround, wall tile) = 3 counted calls, 200 at default REQUESTS_PER_TOKEN', async () => {
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_ROOM_PRESETS: '1' });
+  try {
+    assert.equal(process.env.REMODEL_REQUESTS_PER_TOKEN, undefined, 'default per-token max (3)');
+    const body = JSON.stringify({ projectId: 1, room: 'bathroom', image_url: PNG(1600, 900), tiers: { flooring: 'flooring.better', vanity: 'vanity.better', tub_shower: 'tub_shower.good' }, finishes: { walls: 'white subway wall tile' } });
+    const r = await fetch(s.base + '/api/remodel/generate', { method: 'POST', headers: { Origin: ORIGIN, Authorization: 'Bearer ' + await token(s.base), 'Content-Type': 'application/json' }, body });
+    assert.equal(r.status, 200); assert.equal(runs.length, 3);
+    assert.match(runs[2].body.prompt, /wall tile/);
+    assert.ok(s.capStore.total() > 0, 'calls were counted in the cap store');
+  } finally { await s.close(); }
+});
