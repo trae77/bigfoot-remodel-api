@@ -125,6 +125,35 @@ const MAGIC = {
   'image/webp': (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
 };
 
+/** Drop JPEG APP1..APP15 + COM segments (EXIF/XMP/GPS/comments) and PNG eXIf/tEXt/zTXt/iTXt chunks. Malformed input is returned unchanged. */
+function stripImageMetadata(type, b) {
+  try {
+    if (type === 'image/jpeg') {
+      const out = [b.subarray(0, 2)]; let i = 2;
+      while (i + 4 <= b.length && b[i] === 0xff) {
+        const m = b[i + 1];
+        if (m === 0xda || m === 0xd9) { out.push(b.subarray(i)); return Buffer.concat(out); }
+        const len = b.readUInt16BE(i + 2);
+        if (len < 2 || i + 2 + len > b.length) return b;
+        if (!((m >= 0xe1 && m <= 0xef) || m === 0xfe)) out.push(b.subarray(i, i + 2 + len));
+        i += 2 + len;
+      }
+      return i >= b.length ? Buffer.concat(out) : b;
+    }
+    if (type === 'image/png') {
+      const out = [b.subarray(0, 8)]; let i = 8;
+      while (i + 12 <= b.length) {
+        const len = b.readUInt32BE(i); const t = b.toString('latin1', i + 4, i + 8);
+        if (i + 12 + len > b.length) return b;
+        if (!['eXIf', 'tEXt', 'zTXt', 'iTXt'].includes(t)) out.push(b.subarray(i, i + 12 + len));
+        i += 12 + len;
+      }
+      return i === b.length ? Buffer.concat(out) : b;
+    }
+  } catch (_e) { return b; }
+  return b;
+}
+
 /** Accept only data:image/(jpeg|png|webp);base64 whose bytes match the declared type. URLs of any kind are refused. */
 function validateImage(raw) {
   if (typeof raw !== 'string') return { error: 'imageUrl must be a data:image/jpeg, png or webp URI' };
@@ -133,7 +162,8 @@ function validateImage(raw) {
   if (m[2].length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) return { error: 'Image is too large', status: 413 };
   const bytes = Buffer.from(m[2], 'base64');
   if (!MAGIC[m[1]](bytes)) return { error: 'Image content does not match its type' };
-  return { image_url: `data:${m[1]};base64,${m[2]}` };
+  const clean = stripImageMetadata(m[1], bytes);
+  return { image_url: clean === bytes ? `data:${m[1]};base64,${m[2]}` : `data:${m[1]};base64,${clean.toString('base64')}` };
 }
 
 /** Validate the whole body before anything is counted or sent. Returns { error, status } or the clean fields. */
@@ -305,6 +335,8 @@ function planCalls(v) {
 }
 
 function sessionKeyFromReq(req) {
+  // All bypass renders share ONE session budget (MAX_SESSION_SPEND_USD), whatever headers they send.
+  if (req.remodelBypass) return 'test-bypass';
   const hdr = (req.headers['x-remodel-session'] || '').toString().trim();
   if (hdr && hdr.length <= 128) return `hdr:${hdr}`;
   const auth = (req.headers.authorization || '').toString();
@@ -539,6 +571,7 @@ function createRemodelGenerateHandler(deps) {
 }
 
 module.exports = {
+  stripImageMetadata,
   FAL_MODEL,
   FAL_MODELS,
   falModel,

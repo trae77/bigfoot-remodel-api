@@ -20,6 +20,7 @@ function createApp(opts = {}) {
   const caps = require('./capStore.cjs');
   const capStore = opts.capStore || caps.capStoreFromEnv(process.env);
   const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
+  const badTokens = opts.badTokenLimiter || sec.createBadTokenLimiter();
   const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
   const imageStore = opts.imageStore || require('./imageStore.cjs').createImageStore();
   const app = express();
@@ -74,8 +75,32 @@ function createApp(opts = {}) {
   const listen = app.listen.bind(app);
   app.listen = (...a) => { const srv = listen(...a); srv.on('close', app.stopSweep); return srv; };
 
+  // Token-gated test bypass (POST /api/remodel/generate only). Skips ONLY the Origin check and the
+  // IP/Origin-bound session token. Validation, D1 month/day/IP caps, the per-render $ ceiling, the
+  // session $ cap, EXIF strip and no-storage all still run. Disabled when REMODEL_TEST_TOKEN is unset/empty.
+  app.use('/api/remodel/generate', (req, res, next) => {
+    const cfg = req.remodelCfg;
+    const given = req.headers[sec.TEST_TOKEN_HEADER];
+    if (!cfg.testToken || given === undefined || req.method !== 'POST') return next();
+    const ip = sec.clientIp(req);
+    if (badTokens.blocked(ip)) {
+      return res.status(429).json({ error: 'Too many attempts. Try again later.', honesty: HONESTY });
+    }
+    if (!sec.testTokenMatches(cfg.testToken, String(given))) {
+      if (!badTokens.fail(ip)) return res.status(429).json({ error: 'Too many attempts. Try again later.', honesty: HONESTY });
+      // Before any cap reservation. Never echo the header.
+      return res.status(401).json({ error: 'Unauthorized', honesty: HONESTY });
+    }
+    if (!cfg.secret) return res.status(503).json({ error: 'Remodel API is not configured', honesty: HONESTY });
+    req.remodelIp = sec.clientIp(req);
+    req.remodelBypass = true;
+    console.info('test_bypass_used');
+    return next();
+  });
+
   // Strict Origin gate on every /api/remodel/* request (incl. preflight). No Origin => 403.
   app.use('/api/remodel', (req, res, next) => {
+    if (req.remodelBypass) return next();
     const cfg = req.remodelCfg;
     const origin = (req.headers.origin || '').toString();
     if (!origin || !cfg.origins.has(origin)) {
@@ -113,6 +138,7 @@ function createApp(opts = {}) {
   async function getClientFromToken(req) {
     const cfg = req.remodelCfg;
     if (!cfg || !cfg.secret) return null;
+    if (req.remodelBypass) return { id: 0, role: 'test' };
     const token = bearer(req);
     if (!token) return null;
     if (cfg.serviceToken && sec.safeEqual(token, cfg.serviceToken)) {
@@ -137,6 +163,10 @@ function createApp(opts = {}) {
     const p = req.remodelClient && req.remodelClient.payload;
     // Count fal calls, not generates: two-pass makes 2 calls and needs 2 slots, checked before the first call.
     const n = planCalls(req.remodelValid).length;
+    // Per-render $ ceiling before anything is reserved.
+    if (n * require('./remodelGenerate.cjs').falModel().usd > cfg.renderMaxUsd + 1e-9) {
+      return res.status(400).json({ error: 'Try fewer changes.', honesty: HONESTY });
+    }
     const { day, month } = caps.periodKeys();
     const ipKey = sec.ipHash(cfg.secret, req.remodelIp);
     let r;
