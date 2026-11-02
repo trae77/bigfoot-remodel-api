@@ -64,7 +64,12 @@ test('URL carries no PII: only id, exp, sig', async () => {
   const p = store.signedImagePath(SECRET, 'abcdefghijklmnopqrstuvwx');
   const u = new URL('http://x' + p);
   assert.deepEqual([...u.searchParams.keys()].sort(), ['exp', 'sig']);
-  assert.ok(!/kitchen|p1|127\.0\.0\.1|@/.test(p));
+  // The sig is a random-looking HMAC (base64url) over a time-based exp, so it can contain 'p1' by chance (~1 in 50
+  // full-suite runs). Check PII only outside the sig value, and check that sig/exp have exactly their expected shapes.
+  assert.match(u.searchParams.get('sig'), /^[A-Za-z0-9_-]+$/);
+  assert.match(u.searchParams.get('exp'), /^\d+$/);
+  const noSig = p.replace(/sig=[^&]*/, 'sig=');
+  assert.ok(!/kitchen|p1|127\.0\.0\.1|@/.test(noSig));
 });
 
 test('signed URL expires after <=15 min and rejects far-future exp', () => {

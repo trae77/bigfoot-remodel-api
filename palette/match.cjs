@@ -60,4 +60,10 @@ function matchColor(q, opts = {}) {
   return none;
 }
 
-module.exports = { matchColor, brandAliasesOn, norm, lev, PALETTE: P };
+/** True when the brand strip (aliases OFF) actually removed a brand term from q. */
+function brandStripped(q) {
+  const n0 = norm(String(q || '')); let n = n0;
+  for (const k of BRAND_KEYS) n = n.replace(new RegExp(`\\b${esc(k)}\\b`, 'g'), ' ').replace(/\s+/g, ' ').trim();
+  return n !== n0.replace(/\s+/g, ' ').trim();
+}
+module.exports = { matchColor, brandStripped, brandAliasesOn, norm, lev, PALETTE: P };

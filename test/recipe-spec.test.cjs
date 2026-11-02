@@ -232,3 +232,8 @@ test('brand-only colorText with aliases off -> colorMatch brand_dropped, no phra
   assert.notEqual(resolveColor(null, 'navy').colorMatch, 'brand_dropped');
   assert.equal(resolveColor('#112233', null).colorMatch, 'hex');
 });
+test('filler-only colorText (no brand removed) is none, not brand_dropped', () => {
+  const { resolveColor } = require('../remodelGenerate.cjs');
+  for (const t of ['paint', 'matte paint', 'color']) { const c = resolveColor(null, t); assert.notEqual(c.colorMatch, 'brand_dropped', t); }
+  assert.equal(resolveColor(null, 'Revere Pewter').colorMatch, 'brand_dropped');
+});
