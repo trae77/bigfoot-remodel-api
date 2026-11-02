@@ -83,10 +83,22 @@ function failoverFlag() { return ['1', 'true', 'on', 'yes'].includes((process.en
 function engineTimeoutMs() { const n = Number((process.env.REMODEL_ENGINE_TIMEOUT_MS || '').trim()); return Number.isInteger(n) && n >= 5000 && n <= 120000 ? n : 60000; }
 /** Per-render dollar ceiling: ONE setting, security.cjs renderMaxUsd (#14: default 0.50, clamped to 1.00). Read from req.remodelCfg when present. */
 function renderMaxUsd(req) { return req && req.remodelCfg && Number.isFinite(req.remodelCfg.renderMaxUsd) ? req.remodelCfg.renderMaxUsd : require('./security.cjs').renderMaxUsd(process.env.REMODEL_RENDER_MAX_USD); }
-/** Recipe: Kontext max only on the hard-photo signal (body hardPhoto: true). REMODEL_MAX_ON_HARD=0 turns the route off (pro only). */
-function maxOnHardOn() { return !['0', 'false', 'off', 'no'].includes((process.env.REMODEL_MAX_ON_HARD || '').trim().toLowerCase()); }
-/** Recipe: Fill is dropped. Only an explicit REMODEL_FILL_ENABLE=1 (plus a valid REMODEL_FILL_USD) brings it back. */
-function fillEnabled() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_FILL_ENABLE || '').trim().toLowerCase()); }
+/** Strict on/off flag: exactly '1' is on; '0' or unset is off; anything else is off with one warn log (fail closed). */
+const warnedStrict = new Set();
+function strictFlag(name) {
+  const raw = (process.env[name] || '').trim();
+  if (raw === '1') return true;
+  if (raw !== '' && raw !== '0' && !warnedStrict.has(`${name}=${raw}`)) { warnedStrict.add(`${name}=${raw}`); console.warn('remodel_flag_invalid', JSON.stringify({ name, using: false })); }
+  return false;
+}
+/**
+ * Recipe-spec §1c.4: the hard-photo engine. REMODEL_HARD_ENGINE defaults to kontext-pro; only the exact value
+ * 'kontext-max' selects max, and only when REMODEL_MAX_ON_HARD is exactly '1'. Anything else = pro (max OFF).
+ */
+function hardEngineId() { return (process.env.REMODEL_HARD_ENGINE || '').trim() === 'kontext-max' ? 'kontext-max' : 'kontext-pro'; }
+function maxOnHardOn() { return strictFlag('REMODEL_MAX_ON_HARD') && hardEngineId() === 'kontext-max'; }
+/** Recipe: Fill is dropped. Only REMODEL_FILL_ENABLE exactly '1' (plus a valid REMODEL_FILL_USD) brings it back. */
+function fillEnabled() { return strictFlag('REMODEL_FILL_ENABLE'); }
 const HEX_RE = /^#[0-9A-Fa-f]{6}$/;
 /** REMODEL_REGION_MODE=cabinets-only (regions ON only): edit just the cabinets; floor, counters, walls, backsplash untouched. */
 function cabinetsOnly() { return regionsOn() && (process.env.REMODEL_REGION_MODE || '').trim().toLowerCase() === 'cabinets-only'; }
@@ -99,6 +111,9 @@ const store = require('./imageStore.cjs');
 const regions = require('./regionTargeting.cjs');
 const engines = require('./engines.cjs');
 const catalog = require('./productCatalog.cjs');
+const hardPhoto = require('./hardPhoto.cjs');
+const palette = require('./palette/match.cjs');
+const MAX_COLOR_TEXT = 60;
 const COST_PER_STILL_USD = 0.04; // pro; use falModel().usd for the live cost
 const MAX_GENERATES_PER_SESSION = 5;
 const MAX_SESSION_SPEND_USD = 0.25;
@@ -216,14 +231,20 @@ function validateGenerateBody(body) {
   }
   const projectId = Number(body.projectId ?? body.project_id);
   if (!Number.isInteger(projectId) || projectId <= 0) return { error: 'projectId is required' };
-  // Recipe: hardPhoto (strict boolean) is the hard-photo signal that routes to Kontext max; anything else = pro.
+  // Recipe-spec §1d: hardPhoto is a strict boolean, default false. It is OR'd with the server's own signals.
   const hp = body.hardPhoto ?? body.hard_photo;
   if (hp != null && typeof hp !== 'boolean') return { error: 'hardPhoto must be true or false' };
-  const hardPhoto = hp === true;
-  // Recipe: paint color as an exact hex reference (e.g. #9CAF88), appended to the walls finish.
-  const ph = body.paintHex ?? body.paint_hex;
-  if (ph != null && (typeof ph !== 'string' || !HEX_RE.test(ph.trim()))) return { error: 'paintHex must be a #RRGGBB color' };
-  const paintHex = ph == null ? null : ph.trim().toUpperCase();
+  const hardPhotoFlag = hp === true;
+  // Recipe-spec §2b: colorHex (paintHex is the older name) wins over colorText. Both target the wall paint.
+  const chIn = body.colorHex ?? body.color_hex ?? body.paintHex ?? body.paint_hex;
+  if (chIn != null && (typeof chIn !== 'string' || !HEX_RE.test(chIn.trim()))) return { error: 'colorHex must be a #RRGGBB color' };
+  const ctIn = body.colorText ?? body.color_text;
+  if (ctIn != null && ctIn !== '') {
+    if (typeof ctIn !== 'string') return { error: 'colorText must be a string' };
+    const t = ctIn.trim();
+    if (t.length > MAX_COLOR_TEXT || !FINISH_RE.test(t) || finishDenied(t)) return { error: 'colorText is not a valid color' };
+  }
+  const color = chIn != null ? resolveColor(chIn.trim(), null) : (ctIn ? resolveColor(null, ctIn.trim()) : null);
   const roomIn = body.room ?? body.roomType ?? 'kitchen';
   if (typeof roomIn !== 'string') return { error: 'room must be a string' };
   const room = roomIn.trim().toLowerCase();
@@ -250,20 +271,70 @@ function validateGenerateBody(body) {
     finishes[slot] = desc;
     catalogSlots.add(slot);
   }
-  if (paintHex) {
-    if (finishes.walls == null || catalogSlots.has('walls')) return { error: 'paintHex needs a walls paint finish' };
-    finishes.walls = `${finishes.walls}, paint color hex ${paintHex}`;
+  if (color && color.phrase) {
+    if (catalogSlots.has('walls')) return { error: 'Pick either a paint color or a product for walls' };
+    finishes.walls = finishes.walls == null ? color.phrase : `${finishes.walls}, ${color.phrase}`;
   }
   const img = validateImage(body.imageUrl ?? body.image_url);
   if (img.error) return img;
-  const prompt = buildPrompt(room, finishes, { catalogSlots });
-  // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
-  const sent = planCalls({ room, finishes, catalogSlots, prompt });
-  if (cabinetsOnly() && !sent.length) return { error: 'Pick a cabinet finish for the cabinet-only preview' };
-  if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
   const longSide = imageLongSide(img.image_url);
   if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
-  return { projectId, room, finishes, catalogSlots, image_url: img.image_url, prompt, longSide, hardPhoto };
+  const v = { projectId, room, finishes, catalogSlots, image_url: img.image_url, longSide, hardPhoto: hardPhotoFlag, color,
+    ...hardPhoto.classify(null, hardPhotoFlag), signals: null };
+  return composeOrFallback(v);
+}
+
+/** colorHex / colorText -> { colorMatch, colorId, colorHexUsed, phrase } (spec §2b). Never a brand name. */
+function resolveColor(hex, text) {
+  const m = palette.matchColor(hex != null ? hex : text);
+  const words = m.id ? m.id.replace(/^css:/, '').replace(/-/g, ' ') : null;
+  let phrase = null;
+  if (m.hex) phrase = `repaint the walls ${words ? `${words} ` : ''}(${m.hex}), a muted matte paint`;
+  else if (m.text) phrase = `repaint the walls ${m.text}, a muted matte paint`; // nomatch: keep the free text, never guess
+  return { colorMatch: m.method, colorId: m.id, colorHexUsed: m.hex, phrase };
+}
+
+/**
+ * The extended keep-list is a free prompt add-on: if it alone pushes a call over the cap, send the base prompt
+ * instead of refusing (meta.hard still reports the decision). Any other error is returned as-is.
+ */
+function composeOrFallback(v) {
+  v.hardPrompt = undefined; v.compactKeep = undefined;
+  let err = composePrompt(v);
+  if (err && err.error === 'Prompt too long' && v.hard) {
+    v.hardPrompt = false; err = composePrompt(v);
+    if (!err) console.warn('remodel_prompt_fallback', JSON.stringify({ dropped: 'hard_keep' }));
+  }
+  // Single-call mode (REMODEL_TWO_PASS=0) with long catalog text: the pre-spec keep line (still keeps rugs and mats).
+  if (err && err.error === 'Prompt too long') {
+    v.compactKeep = true; err = composePrompt(v);
+    if (!err) console.warn('remodel_prompt_fallback', JSON.stringify({ dropped: 'base_keep' }));
+  }
+  return err || v;
+}
+function hardWording(v) { return v.hard === true && v.hardPrompt !== false; }
+
+/** Builds v.prompt for v.hard and checks every planned fal call against MAX_PROMPT_CHARS. Returns an error or null. */
+function composePrompt(v) {
+  v.prompt = buildPrompt(v.room, v.finishes, { catalogSlots: v.catalogSlots, hard: hardWording(v), compactKeep: v.compactKeep === true });
+  // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
+  const sent = planCalls(v);
+  if (cabinetsOnly() && !sent.length) return { error: 'Pick a cabinet finish for the cabinet-only preview' };
+  if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
+  return null;
+}
+
+/**
+ * Full validation: the sync checks, then the hard-photo signals (sharp, 256 px) computed BEFORE any cap or paid
+ * call (spec §1d). If the signals make the photo hard, the prompt is rebuilt with the extended keep-list and rechecked.
+ */
+async function validateGenerateRequest(body, opts = {}) {
+  const v = validateGenerateBody(body);
+  if (v.error) return v;
+  v.signals = await hardPhoto.computeSignals(v.image_url, opts.sharp);
+  Object.assign(v, hardPhoto.classify(v.signals, v.hardPhoto));
+  if (v.signals) console.info('remodel_hard_signals', JSON.stringify({ ...v.signals, hard: v.hard, reasons: v.hardReasons }));
+  return composeOrFallback(v);
 }
 
 // Naming a pattern, even as "no parquet", pulls Kontext toward it, so unwanted patterns are never named.
@@ -318,9 +389,22 @@ function floorInstruction(v, fromCatalog, short = false) {
  * The floor is the edit it most often skips, so it leads, on its own line, ahead of the other finishes.
  */
 /** What to keep, minus anything this prompt asks to change (a51aaa6 said "keep walls" while also changing wall paint). */
-function keepList(f, hasFloor, room) {
+// Recipe-spec §1c.1: the base keep-list classes, on every request. Merged into the one keep sentence below so the
+// single-call full-catalog prompt stays under MAX_PROMPT_CHARS ("exactly as they are" = "exactly as in the photo").
+const BASE_KEEP = ['all appliances', 'counter items', 'shelf items', 'furniture', 'rugs', 'mats', 'towels', 'lighting', 'windows'];
+// Recipe-spec §1c.3: the extended keep-list for hard photos.
+const HARD_KEEP = 'Do not remove, tidy or restyle anything; same camera framing';
+const TARGET_WORDS = { cabinets: 'cabinet faces', counters: 'countertops', walls: 'wall paint', backsplash: 'backsplash', vanity: 'vanity', tub_shower: 'tub/shower', floor: 'flooring' };
+function targetList(f) {
+  const t = Object.keys(TARGET_WORDS).filter((k) => !(f[k] == null || f[k] === '')).map((k) => TARGET_WORDS[k]);
+  if (t.length < 2) return t[0] || 'listed finishes';
+  return `${t.slice(0, -1).join(', ')} and ${t[t.length - 1]}`;
+}
+function keepList(f, hasFloor, room, compact = false) {
   const layout = room === 'bathroom' ? ['fixture layout'] : ['cabinet layout', 'appliance footprints', 'fixture layout'];
-  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', ...layout, 'rugs and mats', 'room dimensions'];
+  const keep = compact
+    ? [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', ...layout, 'rugs and mats', 'room dimensions']
+    : [...BASE_KEEP, ...(f.walls ? ['wall layout'] : ['walls']), 'camera angle', ...layout, 'room dimensions'];
   if (!hasFloor) keep.push('the floor');
   const last = keep.pop();
   return `${keep.join(', ')} and ${last}`;
@@ -348,6 +432,7 @@ function buildPrompt(room, finishes, opts = {}) {
   const f = finishes && typeof finishes === 'object' ? finishes : {};
   const fromCat = opts.catalogSlots instanceof Set ? opts.catalogSlots : new Set();
   const hasFloor = !(f.floor == null || f.floor === '');
+  const hard = opts.hard === true;
   const others = [
     ['Cabinet faces', f.cabinets == null || f.cabinets === '' ? f.cabinets : cabinetPhrase(f.cabinets, fromCat.has('cabinets'))], ['Countertops', f.counters], ['Wall paint/tile', f.walls],
     ['Backsplash', f.backsplash], ['Vanity', f.vanity], ['Tub/shower', f.tub_shower],
@@ -355,9 +440,13 @@ function buildPrompt(room, finishes, opts = {}) {
   return [
     `Edit this photo of a ${room || 'kitchen'}.`,
     ...(hasFloor ? [`Main edit - Floor: ${floorInstruction(f.floor, fromCat.has('floor'), true)}.`] : []),
-    ...(others.length ? [hasFloor ? 'Also change these finishes:' : 'Change these finishes:', ...others.map(([k, v]) => `- ${k}: ${v}`)] : []),
+    ...(others.length ? [hard ? (hasFloor ? 'Also clearly change these finishes:' : 'Clearly change these finishes:') : (hasFloor ? 'Also change these finishes:' : 'Change these finishes:'),
+      ...others.map(([k, v]) => `- ${k}: ${hard ? String(v).replace(/^repaint the walls\b/, 'clearly repaint the walls') : v}`)] : []),
     '',
-    `Keep everything else exactly as in the photo: ${keepList(f, hasFloor, room)}. Do not add people, text overlays, or new furniture.`,
+    opts.compactKeep ? `Keep everything else exactly as in the photo: ${keepList(f, hasFloor, room, true)}.`
+      : `Keep everything else exactly as in the photo: ${keepList(f, hasFloor, room)}; change only the ${targetList(f)}.`,
+    ...(hard ? [`${HARD_KEEP}${hasFloor ? '' : '; same floor coverings'}.`] : []),
+    'Do not add people, text overlays, or new furniture.',
     'Output one photoreal still.',
   ].join('\n');
 }
@@ -369,10 +458,11 @@ function absoluteImageUrl(path) {
 }
 
 /** Pass 1 of the two-pass edit: the floor and nothing else, short and direct (BFL: one direct instruction, then what to keep). */
-function floorOnlyPrompt(floor, fromCatalog) {
+function floorOnlyPrompt(floor, fromCatalog, hard = false) {
   return [
     `Change only the floor. ${floorInstruction(floor, fromCatalog).replace(/^replace/, 'Replace')}.`,
     'Leave the cabinets, counters, walls, appliances, windows and camera angle unchanged. Keep all appliances, objects, rugs and mats not in the target regions unchanged.',
+    ...(hard ? [`${HARD_KEEP}.`] : []),
   ].join('\n');
 }
 
@@ -399,11 +489,11 @@ function planCalls(v) {
 function legacyCalls(v, f, hasFloor) {
   if (!twoPassOn() || !hasFloor) return [{ prompt: v.prompt }];
   const fromCat = v.catalogSlots instanceof Set && v.catalogSlots.has('floor');
-  const pass1 = { prompt: floorOnlyPrompt(f.floor, fromCat), guidance_scale: floorGuidance() };
+  const pass1 = { prompt: floorOnlyPrompt(f.floor, fromCat, hardWording(v)), guidance_scale: floorGuidance() };
   const rest = { ...f, floor: null };
   const others = Object.entries(rest).some(([, x]) => !(x == null || x === ''));
   if (!others) return [pass1];
-  return [pass1, { prompt: buildPrompt(v.room, rest, { catalogSlots: v.catalogSlots }) }];
+  return [pass1, { prompt: buildPrompt(v.room, rest, { catalogSlots: v.catalogSlots, hard: hardWording(v), compactKeep: v.compactKeep === true }) }];
 }
 
 function sessionKeyFromReq(req) {
@@ -595,7 +685,7 @@ function withTimeout(p, ms) {
  * The engine this request will use. Regions OFF: always kontext (engine + provider). Regions ON: the
  * REMODEL_REGION_ENGINE choice; 'fill' without a valid price (at most 0.16 USD) returns null = refuse (fail closed).
  */
-function hardRoute(e, v) { return e && e.id === 'kontext' && v && v.hardPhoto === true && maxOnHardOn() ? engines.ENGINES['kontext-max'] : e; }
+function hardRoute(e, v) { return e && e.id === 'kontext' && v && v.hard === true && maxOnHardOn() ? engines.ENGINES['kontext-max'] : e; }
 function selectEngine(v) {
   if (!regionsOn()) return hardRoute(engines.ENGINES.kontext, v);
   const want = (process.env.REMODEL_REGION_ENGINE || '').trim().toLowerCase();
@@ -621,6 +711,21 @@ async function callFalJson(model, body, opts = {}) {
   if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
   if (data && typeof data === 'object') Object.defineProperty(data, '__falStoreIo', { value: headers['X-Fal-Store-IO'] ?? null, enumerable: false });
   return data;
+}
+
+/** Response meta (spec §1d, §2b): hard-photo decision, signals, engine and color match. No brand names, no prices. */
+function responseMeta(v, engine) {
+  const c = v.color || null;
+  return {
+    hard: v.hard === true,
+    hardReasons: v.hardReasons || [],
+    signals: v.signals || null,
+    engine: engine.id === 'kontext' ? 'kontext-pro' : engine.id,
+    warning: v.warning || null,
+    colorMatch: c ? c.colorMatch : null,
+    colorId: c ? c.colorId : null,
+    colorHexUsed: c ? c.colorHexUsed : null,
+  };
 }
 
 /**
@@ -649,7 +754,7 @@ function createRemodelGenerateHandler(deps) {
         });
       }
 
-      const v = req.remodelValid || validateGenerateBody(req.body);
+      const v = req.remodelValid || await validateGenerateRequest(req.body);
       if (v.error) return early(v.status || 400, { error: v.error, honesty: HONESTY });
       const { projectId, image_url } = v;
       const calls = planCalls(v);
@@ -753,6 +858,7 @@ function createRemodelGenerateHandler(deps) {
         provider: engine.model(),
         seed: data.seed ?? null,
         projectId,
+        meta: responseMeta(v, engine),
       });
     } catch (e) {
       // QA R66 P3: nothing reached fal (thrown before the first call, or a NO_MASK refusal before anything billed): release all.
@@ -774,6 +880,12 @@ function createRemodelGenerateHandler(deps) {
 
 module.exports = {
   maxOnHardOn,
+  hardEngineId,
+  validateGenerateRequest,
+  resolveColor,
+  responseMeta,
+  BASE_KEEP,
+  HARD_KEEP,
   fillEnabled,
   HEX_RE,
   presetsOn,

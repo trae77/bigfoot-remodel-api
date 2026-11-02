@@ -18,7 +18,7 @@ test('non-wood floors and unchanged stay as-is', () => {
   assert.equal(floorPhrase('Gray porcelain tile'), 'Gray porcelain tile');
   assert.equal(floorPhrase('Oak-look vinyl plank'), 'Oak-look vinyl plank');
   const none = buildPrompt('kitchen', {});
-  assert.ok(!/Floor:/.test(none)); assert.match(none, /room dimensions and the floor\./);
+  assert.ok(!/Floor:/.test(none)); assert.match(none, /room dimensions and the floor;/);
 });
 
 test('explicit herringbone/parquet keeps the pattern and wood type', () => {
@@ -49,7 +49,7 @@ test('keep list never contradicts an edit: changing wall paint drops "walls" fro
   const keep = pr.split('\n').find((l) => l.startsWith('Keep everything else'));
   assert.ok(!/\bwalls\b/.test(keep), keep); assert.match(keep, /wall layout/);
   assert.ok(!/the floor/.test(keep));
-  assert.match(buildPrompt('kitchen', { cabinets: 'x' }), /Keep everything else exactly as in the photo: walls, /);
+  assert.match(buildPrompt('kitchen', { cabinets: 'x' }), /Keep everything else exactly as in the photo: all appliances, .*windows, walls, /);
 });
 
 test('floorPhrase strips "no ..." negations before it looks for a pattern word', () => {

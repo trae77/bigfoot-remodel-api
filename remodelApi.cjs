@@ -8,6 +8,7 @@ const {
   createRemodelGenerateHandler,
   getFalKey,
   validateGenerateBody,
+  validateGenerateRequest,
   HONESTY,
   planCalls,
   selectEngine,
@@ -152,8 +153,9 @@ function createApp(opts = {}) {
   }
 
   // Reject malformed requests BEFORE any cap is touched, so junk can't lock out real users.
-  function validateGate(req, res, next) {
-    const v = validateGenerateBody(req.body);
+  async function validateGate(req, res, next) {
+    let v;
+    try { v = await validateGenerateRequest(req.body); } catch (_e) { return res.status(400).json({ error: 'Could not read the request', honesty: HONESTY }); }
     if (v.error) return res.status(v.status || 400).json({ error: v.error, honesty: HONESTY });
     req.remodelValid = v;
     return next();
