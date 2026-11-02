@@ -22,3 +22,13 @@ Set `FAL_KEY` on the host only (the only key var read; see DEPLOY-NOTE-P1-3.md).
 - Storage cost: $0 (Render free instance RAM). No bucket, no new account. R2/S3 were not used because they need a billing setup.
 - fal delete needs a fal key with `models:requests:write` + `assets:write` (fal "FULL" preset). If the key lacks them, the delete fails, an `ALERT fal_payload_delete_failed` error is logged (no URL, key or id; per-file failures in a 200 also count), and fal's copy stays at an unguessable public URL until fal's own expiry. The client still never sees it.
 - Tests mock fal (`test/image-privacy.test.cjs`). No real renders.
+
+## Operator test bypass (REMODEL_TEST_TOKEN)
+Off unless `REMODEL_TEST_TOKEN` is set to a strong secret (32+ chars). An operator sends it in the
+`X-Remodel-Test-Token` header on `POST /api/remodel/generate`; no Origin or session token is needed.
+It skips ONLY the Origin allowlist and the IP/Origin-bound session token (the box's egress IP changes per
+connection, which broke scripted renders with 401s). Everything else still runs: validation, metadata strip,
+the per-render $ ceiling (`REMODEL_RENDER_MAX_USD`, default 0.50), D1 month/day/IP caps (fail closed), one
+shared session $ budget for all bypass renders, `X-Fal-Store-IO: 0` and private storage. A wrong token gets 401
+before any reservation. The secret is compared in constant time and never logged; only `test_bypass_used` is.
+Unset the var to disable.
