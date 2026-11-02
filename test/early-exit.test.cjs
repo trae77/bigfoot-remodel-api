@@ -7,7 +7,7 @@ const PNG = (w, h) => { const b = Buffer.alloc(24); Buffer.from([0x89,0x50,0x4e,
 const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]);
 const hdrs = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
 const ALL = { floor: 'light oak', cabinets: 'white shaker', counters: 'white quartz', walls: 'soft gray' };
-const KEYS = ['REMODEL_REGIONS', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_ROOM_PRESETS'];
+const KEYS = ['REMODEL_REGIONS', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_ENABLE', 'REMODEL_FILL_USD', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_TWO_PASS', 'REMODEL_FAL_MODEL', 'REMODEL_ROOM_PRESETS'];
 
 function stub(runs, { fail = false } = {}) {
   return async (url, init = {}) => {
@@ -74,16 +74,16 @@ test('dollar-cap refusal releases the count reservations and the token', async (
 });
 
 test('engine unavailable (fill without price): 503 before any reservation', async () => {
-  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill' });
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1' });
   try { assert.equal((await gen(s.base, await token(s.base))).status, 503); assert.equal(s.capStore.total(), 0); assert.equal(runs.length, 0); } finally { await s.close(); }
 });
 
 test('handler early exits after reservation release everything: render ceiling, unreadable image size, session limit', async () => {
   // ceiling
   let runs = []; let s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_RENDER_MAX_USD: '0.08' });
-  try { const r = await gen(s.base, await token(s.base)); assert.equal(r.status, 429); assert.equal(s.capStore.total(), 0); assert.equal(runs.length, 0); } finally { await s.close(); }
+  try { const r = await gen(s.base, await token(s.base)); assert.equal(r.status, 400); assert.equal(s.capStore.total(), 0); assert.equal(runs.length, 0); } finally { await s.close(); }
   // mask engine + unreadable size (valid JPEG magic, no SOF)
-  runs = []; s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05' });
+  runs = []; s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.05' });
   try {
     const jpg = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0]).toString('base64');
     const r = await gen(s.base, await token(s.base), { counters: 'granite' }, jpg);
@@ -156,7 +156,7 @@ test('R66-3 failover count refusal gives the token use back', async () => {
 });
 
 test('R66-P3a throw before the first fal call (mask build fails) releases everything: 500, caps and token unchanged', async () => {
-  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05', REMODEL_REQUESTS_PER_TOKEN: '1' });
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.05', REMODEL_REQUESTS_PER_TOKEN: '1' });
   try {
     const t = await token(s.base);
     const r = await gen(s.base, t, { counters: 'granite' }, PNG(9000, 900)); // > 8192 px: heuristicMask throws
@@ -166,7 +166,7 @@ test('R66-P3a throw before the first fal call (mask build fails) releases everyt
 });
 
 test('R66-P3b NO_MASK on the first call releases everything: 503, caps and token unchanged', async () => {
-  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05', REMODEL_REQUESTS_PER_TOKEN: '1' });
+  const runs = []; const s = await boot(stub(runs), { REMODEL_REGIONS: '1', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.05', REMODEL_REQUESTS_PER_TOKEN: '1' });
   const regions = require('../regionTargeting.cjs'); const orig = regions.heuristicMask;
   try {
     const t = await token(s.base);
@@ -186,7 +186,7 @@ for (const [room, finishes, n] of [['bathroom', { floor: 'gray porcelain tile', 
       const body = JSON.stringify({ projectId: 1, room, image_url: PNG(1600, 900), finishes });
       let r = await fetch(s.base + '/api/remodel/generate', { method: 'POST', headers: h(await token(s.base)), body });
       assert.equal(r.status, 200); assert.equal(runs.length, n);
-      for (const x of runs) assert.match(x.body.prompt, /Keep all appliances and objects not in the target regions unchanged/);
+      for (const x of runs) assert.match(x.body.prompt, /Keep all appliances, objects, rugs and mats not in the target regions unchanged/);
       r = await fetch(s.base + '/api/remodel/generate', { method: 'POST', headers: h(await token(s.base)), body });
       assert.equal(r.status, 429); assert.equal(runs.length, n, 'no extra fal call once the count cap is spent');
     } finally { await s.close(); }

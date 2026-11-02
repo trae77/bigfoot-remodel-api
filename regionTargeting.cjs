@@ -16,15 +16,16 @@ const RIDE_ALONG = ['walls', 'backsplash'];
 
 // Things the model must never restyle. The dining table top was being turned into countertop.
 const EXCLUDE = 'Do not change any table, dining table, table top, chairs, stools, benches, rugs, decor or other furniture: keep their exact shape, material and color';
-const KEEP_OTHERS = 'Keep all appliances and objects not in the target regions unchanged';
+// Recipe (12-photo test t12, 2026-11-01): the floor pass removed rugs and bath mats, so they are named as kept.
+const KEEP_OTHERS = 'Keep all appliances, objects, rugs and mats not in the target regions unchanged';
 const NO_ADD = 'Do not add people, text, logos, new furniture or new objects';
 // Floor stripes in render 3: plain, uniform, no painted-on lines.
-const FLOOR_GUARD = 'one uniform material across the whole floor, no stripes, no painted lines, no banding, no repeating light-dark bars, no rug, seams only where planks or tiles meet';
+const FLOOR_GUARD = 'one uniform material across the whole floor, no stripes, no painted lines, no banding, no repeating light-dark bars, seams only where planks or tiles meet';
 
 const REGION_SPEC = {
   floor: {
     label: 'the floor',
-    keep: 'cabinets, countertops, walls, appliances, windows, table, chairs and camera angle',
+    keep: 'cabinets, countertops, walls, appliances, windows, table, chairs, rugs, mats and camera angle',
     negative: ['stripes', 'banding', 'painted lines', 'pattern change on furniture', 'table or chairs changed'],
   },
   cabinets: {

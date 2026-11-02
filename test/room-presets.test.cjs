@@ -21,7 +21,7 @@ test('no exterior/siding preset', () => {
 test('bathroom: vanity, tile floor, surround + wall tile folded into the last call = 3 calls', () => {
   const c = plan(ON, { room: 'bathroom', tiers: { flooring: 'flooring.better', vanity: 'vanity.better', tub_shower: 'tub_shower.good' }, finishes: { walls: 'white subway wall tile' } });
   assert.deepEqual(c.map((x) => x.region), ['vanity', 'floor', 'tub_shower']);
-  for (const x of c) { assert.match(x.prompt, /Keep all appliances and objects not in the target regions unchanged/); assert.match(x.prompt, /toilet/); assert.ok(R.heuristicMask(x.region, 64, 48).startsWith('data:image/png;base64,')); }
+  for (const x of c) { assert.match(x.prompt, /Keep all appliances, objects, rugs and mats not in the target regions unchanged/); assert.match(x.prompt, /toilet/); assert.ok(R.heuristicMask(x.region, 64, 48).startsWith('data:image/png;base64,')); }
   assert.match(c[0].prompt, /vanity/); assert.match(c[2].prompt, /shower and tub surround/); assert.match(c[2].prompt, /Also change the wall tile/);
   assert.ok(!/Also change/.test(c[0].prompt + c[1].prompt), 'wall tile only on the last call');
 });

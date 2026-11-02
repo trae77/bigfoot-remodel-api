@@ -21,7 +21,7 @@ function stubFal(runs, { failPass = 0 } = {}) {
     throw new Error('unexpected outbound ' + url);
   };
 }
-const ENV_KEYS = ['REMODEL_REGION_MODE', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_ENGINE_TIMEOUT_MS', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_REGIONS', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_USD', 'REMODEL_TWO_PASS', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_FAL_MODEL'];
+const ENV_KEYS = ['REMODEL_REGION_MODE', 'REMODEL_DECLUTTER', 'REMODEL_FAILOVER', 'REMODEL_QWEN_USD', 'REMODEL_RENDER_MAX_USD', 'REMODEL_ENGINE_TIMEOUT_MS', 'REMODEL_MONTHLY_USD_CAP', 'REMODEL_REGIONS', 'REMODEL_REGION_ENGINE', 'REMODEL_FILL_ENABLE', 'REMODEL_FILL_USD', 'REMODEL_TWO_PASS', 'REMODEL_PER_IP_DAILY', 'REMODEL_GLOBAL_DAILY', 'REMODEL_REQUESTS_PER_TOKEN', 'REMODEL_FAL_MODEL'];
 async function boot(fetchImpl, env = {}) {
   for (const k of ENV_KEYS) delete process.env[k];
   Object.assign(process.env, { REMODEL_TOKEN_SECRET: 'Tq7vR2mZp9Lk4Wx8Bn3Hc6Jd1Fs5Gy0Ae', FAL_KEY: 'fake-fal', REMODEL_REGIONS: '1' }, env);
@@ -132,16 +132,16 @@ test('a failing middle pass returns 502 and stops (no further calls); missing ke
 
 test('fill fails closed (503, no call) when REMODEL_FILL_USD is unset, junk, or above 0.16', async () => {
   for (const v of [undefined, 'abc', '0', '-1', '0.17', '0.5', '5']) {
-    const env = { REMODEL_REGION_ENGINE: 'fill' }; if (v !== undefined) env.REMODEL_FILL_USD = v;
+    const env = { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1' }; if (v !== undefined) env.REMODEL_FILL_USD = v;
     const runs = []; const s = await boot(stubFal(runs), env);
     try { const r = await gen(s.base, { counters: 'granite' }); assert.equal(r.status, 503, String(v)); assert.equal(runs.length, 0, String(v)); } finally { await s.close(); }
   }
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.16' });
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.16' });
   try { assert.equal((await gen(s.base, { counters: 'granite' })).status, 200); assert.equal(runs[0].url, 'https://fal.run/fal-ai/flux-pro/v1/fill'); } finally { await s.close(); }
 });
 
 test('regions OFF: engine and provider forced to kontext even with REMODEL_REGION_ENGINE=fill and a price', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGIONS: '0', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05' });
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGIONS: '0', REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.05' });
   try {
     const r = await gen(s.base);
     assert.equal(r.status, 200);
@@ -151,7 +151,7 @@ test('regions OFF: engine and provider forced to kontext even with REMODEL_REGIO
 });
 
 test('fill engine refuses to run without a PNG mask (NO_MASK, no fetch)', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05' });
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.05' });
   await s.close();
   const e = require('../engines.cjs').ENGINES.fill;
   for (const m of [undefined, '', 'https://x/mask.png', 'data:image/jpeg;base64,AA']) {
@@ -177,7 +177,7 @@ test('monthly dollar cap default is 10 USD; invalid or above 19 falls back to 10
 });
 
 test('monthly dollar cap counts the fill price per call: 0.32 cap allows two 0.16 fill calls, third refused with no call', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.16', REMODEL_MONTHLY_USD_CAP: '0.32' });
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.16', REMODEL_MONTHLY_USD_CAP: '0.32' });
   try {
     assert.equal((await gen(s.base, { counters: 'granite' })).status, 200);
     assert.equal((await gen(s.base, { counters: 'granite' })).status, 200);
@@ -197,7 +197,7 @@ test('API security headers: nosniff, no-referrer, CSP default-src none', async (
 });
 
 test('fill engine with price set: sends a heuristic PNG mask sized to the photo, same retention headers', async () => {
-  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_USD: '0.05' });
+  const runs = []; const s = await boot(stubFal(runs), { REMODEL_REGION_ENGINE: 'fill', REMODEL_FILL_ENABLE: '1', REMODEL_FILL_USD: '0.05' });
   try {
     const r = await gen(s.base, { floor: 'oak', counters: 'granite' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
@@ -255,7 +255,7 @@ function stubFal2(runs, { failUrl = null, failTimes = 1, hang = false } = {}) {
 
 test('region prompts keep appliances/objects outside the target regions', () => {
   const { planRegions } = require('../regionTargeting.cjs');
-  for (const c of planRegions('kitchen', ALL)) assert.match(c.prompt, /Keep all appliances and objects not in the target regions unchanged/);
+  for (const c of planRegions('kitchen', ALL)) assert.match(c.prompt, /Keep all appliances, objects, rugs and mats not in the target regions unchanged/);
 });
 
 test('declutter OFF by default; ON prepends one empty-the-room call (regions on: 4 calls, all counted)', async () => {
@@ -289,7 +289,7 @@ test('declutter with regions OFF: 1 + legacy plan (two-pass = 3 calls); dollar c
 
 test('per-render ceiling refuses up front (no call) when planned calls exceed REMODEL_RENDER_MAX_USD', async () => {
   const runs = []; const s = await boot(stubFal2(runs), { REMODEL_DECLUTTER: '1', REMODEL_RENDER_MAX_USD: '0.12', REMODEL_REQUESTS_PER_TOKEN: '5' });
-  try { const r = await gen(s.base); assert.equal(r.status, 429); assert.equal(runs.length, 0); } finally { await s.close(); for (const k of ['REMODEL_DECLUTTER', 'REMODEL_RENDER_MAX_USD']) delete process.env[k]; }
+  try { const r = await gen(s.base); assert.equal(r.status, 400, JSON.stringify(r.json)); assert.equal(runs.length, 0); } finally { await s.close(); for (const k of ['REMODEL_DECLUTTER', 'REMODEL_RENDER_MAX_USD']) delete process.env[k]; }
 });
 
 test('failover OFF by default and disabled without REMODEL_QWEN_USD (or above 0.16): kontext error is a plain 502', async () => {
@@ -360,5 +360,5 @@ test('legacy Kontext prompts also keep appliances/objects outside the target reg
   delete process.env.REMODEL_REGIONS; delete require.cache[require.resolve('../remodelGenerate.cjs')];
   const g = require('../remodelGenerate.cjs');
   // buildPrompt (single-call/pass 2) is at the 1200-char cap for full tier combos, so it keeps its existing keep-list.
-  assert.match(g.floorOnlyPrompt('oak'), /Keep all appliances and objects not in the target regions unchanged/);
+  assert.match(g.floorOnlyPrompt('oak'), /Keep all appliances, objects, rugs and mats not in the target regions unchanged/);
 });

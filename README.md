@@ -39,8 +39,8 @@ Kontext runs first. If a call errors or times out (REMODEL_ENGINE_TIMEOUT_MS, de
 The retry uses a structure guard prompt and the region mask. It only works when REMODEL_QWEN_USD is set (0 < x <= 0.16), from fal's price page; no price is hard-coded.
 Before the retry goes out, it is reserved atomically on the monthly, daily and per-IP caps, the per-token allowance, the session limit and the monthly dollar cap. The failed Kontext attempt is charged too, since it may have billed.
 
-### Per-render ceiling (REMODEL_RENDER_MAX_USD, default 0.50 USD, max 1)
-The planned calls are checked before the first call: a render that cannot fit is refused (429) with no call. No failover retry is sent if it would cross the ceiling.
+### Per-render ceiling (REMODEL_RENDER_MAX_USD, default 0.50 USD, clamped to 1.00)
+ONE setting (security.cjs, from #14). The planned calls x the selected engine's per-call price are checked in capGate before any reservation: a render that cannot fit is refused (400) with no call. The in-handler per-call check reads the same setting. No failover retry is sent if it would cross the ceiling.
 Note: the per-token allowance (REMODEL_REQUESTS_PER_TOKEN, default 3) must be at least the call count, or multi-call renders get a 401. Use 4 with declutter + regions, or 8 with failover too.
 
 ### Worst-case calls and dollars per render (Kontext pro 0.04, Kontext max 0.08, fill/qwen at most 0.16 per call)
@@ -68,3 +68,20 @@ Prices are not hardcoded: they come from the engine price env vars; the table us
 
 ### Cabinet-only mode (REMODEL_REGION_MODE=cabinets-only, needs REMODEL_REGIONS on)
 Makes one call that edits only the cabinets. The floor, counters, walls and backsplash stay untouched. A request without a cabinet finish gets a 400 with no call.
+## Operator test bypass (REMODEL_TEST_TOKEN)
+Off unless `REMODEL_TEST_TOKEN` is set to a strong secret (32+ chars). An operator sends it in the
+`X-Remodel-Test-Token` header on `POST /api/remodel/generate`; no Origin or session token is needed.
+It skips ONLY the Origin allowlist and the IP/Origin-bound session token (the box's egress IP changes per
+connection, which broke scripted renders with 401s). Everything else still runs: validation, metadata strip,
+the per-render $ ceiling (`REMODEL_RENDER_MAX_USD`, default 0.50), D1 month/day/IP caps (fail closed), one
+shared session $ budget for all bypass renders, `X-Fal-Store-IO: 0` and private storage. A wrong token gets 401
+before any reservation. The secret is compared in constant time and never logged; only `test_bypass_used` is.
+Unset the var to disable.
+
+## Launch recipe (William via CEO, 2026-11-02)
+Source: AI Bot's 12-photo test, /workspace/remodel-test/ab/t12/ (run12.py, scores_12.csv): arm A Kontext pro two-pass, arm B Fill, arm C Kontext max.
+- **Kontext pro two-pass** (default: REMODEL_TWO_PASS on, REMODEL_FAL_MODEL unset = pro): floor first, then the other finishes.
+- **Keep rugs and mats**: every prompt's keep line names rugs and mats (t12 floor passes removed a rug and bath mats); the floor guard no longer says "no rug".
+- **Hex paint**: optional `paintHex: "#RRGGBB"` on generate is appended to the walls finish ("..., paint color hex #9CAF88"). Needs a walls finish; bad hex = 400 before any count.
+- **Kontext max only on hard photos**: `hardPhoto: true` (strict boolean) routes every call of that render to fal-ai/flux-pro/kontext/max at 0.08/call. A 2-pass max render reserves 2 counts and 16 cents up front and must fit the per-render ceiling. REMODEL_MAX_ON_HARD=0 turns the route off. Env can never select max.
+- **Fill dropped**: REMODEL_REGION_ENGINE=fill runs Kontext unless REMODEL_FILL_ENABLE=1 is also set (plus a valid REMODEL_FILL_USD).

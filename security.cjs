@@ -38,6 +38,65 @@ function getConfig() {
     // Global hard cap per calendar month (UTC), counted in fal calls like the daily caps. Env-only; no client override.
     globalMonthly: intEnv('REMODEL_GLOBAL_MONTHLY', 120),
     perTokenMax: intEnv('REMODEL_REQUESTS_PER_TOKEN', MAX_REQUESTS_PER_TOKEN),
+    testToken: testTokenFromEnv(),
+    // Per-render $ ceiling, checked before any reservation or fal call.
+    renderMaxUsd: renderMaxUsd(process.env.REMODEL_RENDER_MAX_USD),
+  };
+}
+
+/**
+ * Test bypass secret (CEO decision): lets ONE operator proof render reach the live API without an
+ * Origin/IP-bound session token. Disabled when REMODEL_TEST_TOKEN is unset, empty, or weak.
+ * Never log, echo, or put this value in errors or URLs.
+ */
+const TEST_TOKEN_HEADER = 'x-remodel-test-token';
+function testTokenFromEnv(env = process.env) {
+  const t = (env.REMODEL_TEST_TOKEN || '').trim();
+  return isStrongSecret(t) ? t : '';
+}
+/** Length-safe constant-time compare via HMAC digests (equal length always), then timingSafeEqual. */
+function testTokenMatches(expected, given) {
+  if (!expected || typeof given !== 'string' || !given) return false;
+  const k = crypto.randomBytes(32);
+  const a = crypto.createHmac('sha256', k).update(expected).digest();
+  const b = crypto.createHmac('sha256', k).update(given).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+const RENDER_MAX_USD_DEFAULT = 0.5;
+const RENDER_MAX_USD_HARD = 1.0;
+/** Per-render $ ceiling: unset/invalid/<=0 -> default $0.50; anything above $1.00 clamps to $1.00. */
+function renderMaxUsd(raw) {
+  const s = String(raw ?? '').trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return RENDER_MAX_USD_DEFAULT;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return RENDER_MAX_USD_DEFAULT;
+  return Math.min(n, RENDER_MAX_USD_HARD);
+}
+
+/** Wrong test-token limiter: 5 bad tokens per IP per 10 min -> 429. In memory, bounded, no cap reservation. */
+function createBadTokenLimiter({ max = 5, windowMs = 10 * 60 * 1000, maxKeys = 10000 } = {}) {
+  const map = new Map();
+  return {
+    blocked(ip, now = Date.now()) {
+      const r = map.get(ip);
+      if (!r || now - r.start >= windowMs) return false;
+      return r.count >= max;
+    },
+    fail(ip, now = Date.now()) {
+      let r = map.get(ip);
+      if (!r || now - r.start >= windowMs) {
+        if (map.size >= maxKeys) { for (const [k, v] of map) if (now - v.start >= windowMs) map.delete(k); }
+        // Fail closed: if still full, the limiter blocks every new IP rather than tracking nothing.
+        if (map.size >= maxKeys) return false;
+        r = { start: now, count: 0 };
+        map.set(ip, r);
+      }
+      r.count += 1;
+      return true;
+    },
+    full() { return map.size >= maxKeys; },
+    size() { return map.size; },
   };
 }
 
@@ -146,6 +205,12 @@ function createTokenUseTracker() {
 }
 
 module.exports = {
+  renderMaxUsd,
+  createBadTokenLimiter,
+  RENDER_MAX_USD_HARD,
+  TEST_TOKEN_HEADER,
+  testTokenFromEnv,
+  testTokenMatches,
   TOKEN_TTL_SEC,
   MAX_REQUESTS_PER_TOKEN,
   isStrongSecret,
