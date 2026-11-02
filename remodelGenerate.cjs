@@ -53,9 +53,51 @@ function imageLongSide(dataUri) {
     return w && h ? Math.max(w, h) : null;
   } catch { return null; }
 }
+/** { w, h } from the same header parse, or null. Used to size heuristic masks. */
+function imageSize(dataUri) {
+  try {
+    const m = /^data:image\/(jpeg|png|webp);base64,(.*)$/.exec(dataUri); if (!m) return null;
+    const b = Buffer.from(m[2].slice(0, 200000), 'base64');
+    if (m[1] === 'png' && b.length >= 24) return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    if (m[1] === 'webp' && b.length >= 30 && b.toString('latin1', 12, 16) === 'VP8X') return { w: 1 + b.readUIntLE(24, 3), h: 1 + b.readUIntLE(27, 3) };
+    if (m[1] === 'jpeg') {
+      for (let i = 2; i + 9 < b.length;) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const mk = b[i + 1];
+        if (mk >= 0xc0 && mk <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(mk)) return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+        i += 2 + b.readUInt16BE(i + 2);
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+/**
+ * REMODEL_REGIONS: per-region passes (floor, cabinets, counters) with furniture exclusions and floor guards.
+ * Default OFF so deploying this changes nothing until flipped. On for 1/true/on/yes; anything else OFF.
+ */
+/** REMODEL_DECLUTTER: 'empty the room' pre-pass (1 extra fal call). Default OFF; on for 1/true/on/yes. */
+function declutterOn() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_DECLUTTER || '').trim().toLowerCase()); }
+/** REMODEL_FAILOVER: on a primary (kontext) error or timeout, retry that one call on Qwen-Image-Edit. Default OFF. */
+function failoverFlag() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_FAILOVER || '').trim().toLowerCase()); }
+/** Per-call timeout for the primary engine before failover (ms). Default 60000, range 5000-120000. */
+function engineTimeoutMs() { const n = Number((process.env.REMODEL_ENGINE_TIMEOUT_MS || '').trim()); return Number.isInteger(n) && n >= 5000 && n <= 120000 ? n : 60000; }
+/** Per-render dollar ceiling: ONE setting, security.cjs renderMaxUsd (#14: default 0.50, clamped to 1.00). Read from req.remodelCfg when present. */
+function renderMaxUsd(req) { return req && req.remodelCfg && Number.isFinite(req.remodelCfg.renderMaxUsd) ? req.remodelCfg.renderMaxUsd : require('./security.cjs').renderMaxUsd(process.env.REMODEL_RENDER_MAX_USD); }
+/** Recipe: Kontext max only on the hard-photo signal (body hardPhoto: true). REMODEL_MAX_ON_HARD=0 turns the route off (pro only). */
+function maxOnHardOn() { return !['0', 'false', 'off', 'no'].includes((process.env.REMODEL_MAX_ON_HARD || '').trim().toLowerCase()); }
+/** Recipe: Fill is dropped. Only an explicit REMODEL_FILL_ENABLE=1 (plus a valid REMODEL_FILL_USD) brings it back. */
+function fillEnabled() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_FILL_ENABLE || '').trim().toLowerCase()); }
+const HEX_RE = /^#[0-9A-Fa-f]{6}$/;
+/** REMODEL_REGION_MODE=cabinets-only (regions ON only): edit just the cabinets; floor, counters, walls, backsplash untouched. */
+function cabinetsOnly() { return regionsOn() && (process.env.REMODEL_REGION_MODE || '').trim().toLowerCase() === 'cabinets-only'; }
+/** REMODEL_ROOM_PRESETS (regions ON only): bathroom, living, bedroom get their own region plans. Default OFF. */
+function presetsOn() { return regionsOn() && ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_ROOM_PRESETS || '').trim().toLowerCase()); }
+function regionsOn() { return ['1', 'true', 'on', 'yes'].includes((process.env.REMODEL_REGIONS || '').trim().toLowerCase()); }
 const FAL_MODEL = FAL_MODELS.pro.id;
 const FAL_RUN_URL = `https://fal.run/${FAL_MODEL}`;
 const store = require('./imageStore.cjs');
+const regions = require('./regionTargeting.cjs');
+const engines = require('./engines.cjs');
 const catalog = require('./productCatalog.cjs');
 const COST_PER_STILL_USD = 0.04; // pro; use falModel().usd for the live cost
 const MAX_GENERATES_PER_SESSION = 5;
@@ -77,7 +119,7 @@ const MAX_PROMPT_CHARS = 1200;
 const MAX_FINISH_CHARS = 100;
 const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 // Must match ROOM_ORDER in the Big Foot page (src/remodelOptions.ts).
-const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry']);
+const ROOMS = new Set(['kitchen', 'bathroom', 'basement', 'deck', 'whole', 'laundry', 'living', 'bedroom']);
 /** Free-text finishes are material words only: no money talk and no instructions to the model. */
 // Checked on the raw text (word boundaries, so 'free-form', 'cost-effective', 'price-matched', 'prompt gray' pass)
 // and on a squashed copy with spaces/hyphens/dots removed (catches 'i g n o r e', 'ig-nore').
@@ -115,7 +157,7 @@ function finishDenied(t) {
   if (FINISH_DENY_SQUASHED_RE.test(squashed)) return true;
   return /ignore|disregard|forget|watermark|systemprompt|instruction/i.test(deLeet(squashed));
 }
-const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash'];
+const FINISH_KEYS = ['floor', 'cabinets', 'counters', 'walls', 'backsplash', 'builtins', 'closet_doors'];
 // Plain finish words only: letters, digits, space and a few joiners. No newlines or prompt syntax.
 const FINISH_RE = /^[A-Za-z0-9 ,.:'&/()+-]+$/;
 
@@ -174,6 +216,14 @@ function validateGenerateBody(body) {
   }
   const projectId = Number(body.projectId ?? body.project_id);
   if (!Number.isInteger(projectId) || projectId <= 0) return { error: 'projectId is required' };
+  // Recipe: hardPhoto (strict boolean) is the hard-photo signal that routes to Kontext max; anything else = pro.
+  const hp = body.hardPhoto ?? body.hard_photo;
+  if (hp != null && typeof hp !== 'boolean') return { error: 'hardPhoto must be true or false' };
+  const hardPhoto = hp === true;
+  // Recipe: paint color as an exact hex reference (e.g. #9CAF88), appended to the walls finish.
+  const ph = body.paintHex ?? body.paint_hex;
+  if (ph != null && (typeof ph !== 'string' || !HEX_RE.test(ph.trim()))) return { error: 'paintHex must be a #RRGGBB color' };
+  const paintHex = ph == null ? null : ph.trim().toUpperCase();
   const roomIn = body.room ?? body.roomType ?? 'kitchen';
   if (typeof roomIn !== 'string') return { error: 'room must be a string' };
   const room = roomIn.trim().toLowerCase();
@@ -200,15 +250,20 @@ function validateGenerateBody(body) {
     finishes[slot] = desc;
     catalogSlots.add(slot);
   }
+  if (paintHex) {
+    if (finishes.walls == null || catalogSlots.has('walls')) return { error: 'paintHex needs a walls paint finish' };
+    finishes.walls = `${finishes.walls}, paint color hex ${paintHex}`;
+  }
   const img = validateImage(body.imageUrl ?? body.image_url);
   if (img.error) return img;
   const prompt = buildPrompt(room, finishes, { catalogSlots });
   // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
   const sent = planCalls({ room, finishes, catalogSlots, prompt });
+  if (cabinetsOnly() && !sent.length) return { error: 'Pick a cabinet finish for the cabinet-only preview' };
   if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
   const longSide = imageLongSide(img.image_url);
   if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
-  return { projectId, room, finishes, catalogSlots, image_url: img.image_url, prompt, longSide };
+  return { projectId, room, finishes, catalogSlots, image_url: img.image_url, prompt, longSide, hardPhoto };
 }
 
 // Naming a pattern, even as "no parquet", pulls Kontext toward it, so unwanted patterns are never named.
@@ -265,7 +320,7 @@ function floorInstruction(v, fromCatalog, short = false) {
 /** What to keep, minus anything this prompt asks to change (a51aaa6 said "keep walls" while also changing wall paint). */
 function keepList(f, hasFloor, room) {
   const layout = room === 'bathroom' ? ['fixture layout'] : ['cabinet layout', 'appliance footprints', 'fixture layout'];
-  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', ...layout, 'room dimensions'];
+  const keep = [...(f.walls ? ['wall layout'] : ['walls']), 'windows', 'camera angle', 'lighting', ...layout, 'rugs and mats', 'room dimensions'];
   if (!hasFloor) keep.push('the floor');
   const last = keep.pop();
   return `${keep.join(', ')} and ${last}`;
@@ -317,14 +372,31 @@ function absoluteImageUrl(path) {
 function floorOnlyPrompt(floor, fromCatalog) {
   return [
     `Change only the floor. ${floorInstruction(floor, fromCatalog).replace(/^replace/, 'Replace')}.`,
-    'Leave the cabinets, counters, walls, appliances, windows and camera angle unchanged.',
+    'Leave the cabinets, counters, walls, appliances, windows and camera angle unchanged. Keep all appliances, objects, rugs and mats not in the target regions unchanged.',
   ].join('\n');
 }
 
 /** The fal calls one generate will make: [{ prompt, guidance_scale? }]. Two only when REMODEL_TWO_PASS=1, a floor change is asked for, and something else changes too. */
 function planCalls(v) {
   const f = v.finishes || {};
+  if (regionsOn()) {
+    const fromCat = v.catalogSlots instanceof Set ? v.catalogSlots : new Set();
+    const phrase = (r, x) => (r === 'floor' ? stripNegations(fromCat.has('floor') ? String(x).trim() : floorPhrase(x)) : r === 'cabinets' ? cabinetPhrase(x, fromCat.has('cabinets')) : String(x));
+    if (presetsOn() && regions.ROOM_PRESETS[v.room]) {
+      const pp = regions.planPreset(v.room, f, phrase);
+      return pp.map((c) => ({ region: c.region, prompt: c.prompt, negative: c.negative, ...(c.region === 'floor' ? { guidance_scale: floorGuidance() } : {}) }));
+    }
+    const src = cabinetsOnly() ? { cabinets: f.cabinets } : f;
+    if (cabinetsOnly() && (f.cabinets == null || f.cabinets === '')) return [];
+    const plan = regions.planRegions(v.room, src, phrase);
+    if (plan.length && declutterOn()) plan.unshift(regions.declutterCall(v.room));
+    if (plan.length) return plan.map((c) => ({ region: c.region, prompt: c.prompt, negative: c.negative, ...(c.region === 'floor' ? { guidance_scale: floorGuidance() } : {}) }));
+  }
   const hasFloor = !(f.floor == null || f.floor === '');
+  const pre = declutterOn() && Object.values(f).some((x) => !(x == null || x === '')) ? [regions.declutterCall(v.room)] : [];
+  return [...pre, ...legacyCalls(v, f, hasFloor)];
+}
+function legacyCalls(v, f, hasFloor) {
   if (!twoPassOn() || !hasFloor) return [{ prompt: v.prompt }];
   const fromCat = v.catalogSlots instanceof Set && v.catalogSlots.has('floor');
   const pass1 = { prompt: floorOnlyPrompt(f.floor, fromCat), guidance_scale: floorGuidance() };
@@ -386,6 +458,12 @@ function resolvedConfig() {
   const h = falRunHeaders('x');
   return {
     twoPass: twoPassOn(),
+    regions: regionsOn(),
+    roomPresets: presetsOn(),
+    cabinetsOnly: cabinetsOnly(),
+    declutter: declutterOn(),
+    failover: Boolean(failoverEngine(engines.ENGINES.kontext)),
+    engine: selectEngine() ? selectEngine().id : 'unavailable',
     model: falModel().id,
     guidance: falGuidance(),
     floorGuidance: floorGuidance(),
@@ -427,7 +505,7 @@ async function callFalKontext(input, opts = {}) {
     safety_tolerance: '2',
   };
   const headers = falRunHeaders(key);
-  const res = await fetchImpl(`https://fal.run/${falModel().id}`, {
+  const res = await fetchImpl(`https://fal.run/${opts.model || falModel().id}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -453,30 +531,126 @@ async function callFalKontext(input, opts = {}) {
   return data;
 }
 
+/** Kontext has no negative-prompt field, so negatives are appended as plain 'Avoid:' words. Mask ignored. */
+function withNegatives(prompt, negative) {
+  return Array.isArray(negative) && negative.length ? `${prompt}\nAvoid: ${negative.join(', ')}.` : prompt;
+}
+engines.register('kontext', {
+  usesMask: false,
+  available: () => true,
+  model: () => falModel().id,
+  usdPerCall: () => falModel().usd,
+  run: (c, imageUrl, o) => callFalKontext({ prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, o),
+});
+// Recipe hard-photo route: Kontext max at its own fal page price (FAL_MODELS.max.usd, 0.08), so caps and the ceiling count 0.08/call.
+engines.register('kontext-max', {
+  id: 'kontext-max',
+  usesMask: false,
+  available: () => true,
+  model: () => FAL_MODELS.max.id,
+  usdPerCall: () => FAL_MODELS.max.usd,
+  run: (c, imageUrl, o) => callFalKontext({ prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, { ...o, model: FAL_MODELS.max.id }),
+});
+// fal FLUX.1 [pro] Fill: prompt + mask inpaint. Price is NOT hard-coded (never invent prices): the engine is
+// only available when REMODEL_FILL_USD is set to a positive number from fal's model page; otherwise kontext is used.
+const FILL_MODEL = 'fal-ai/flux-pro/v1/fill';
+// Hard ceiling (QA R64): any value above 0.16 USD per call, or not a number, disables fill (fail closed, 503).
+const MAX_FILL_USD = 0.16;
+function fillUsd() { const n = Number((process.env.REMODEL_FILL_USD || '').trim()); return Number.isFinite(n) && n > 0 && n <= MAX_FILL_USD ? n : null; }
+engines.register('fill', {
+  usesMask: true,
+  available: () => fillEnabled() && fillUsd() != null,
+  model: () => FILL_MODEL,
+  usdPerCall: () => fillUsd(),
+  run: (c, imageUrl, o) => {
+    // Fill must never run without a mask (it would repaint the whole photo).
+    if (typeof c.mask_url !== 'string' || !c.mask_url.startsWith('data:image/png;base64,')) { const e = new Error('fill without mask'); e.code = 'NO_MASK'; return Promise.reject(e); }
+    return callFalJson(FILL_MODEL, { prompt: withNegatives(c.prompt, c.negative), image_url: imageUrl, mask_url: c.mask_url, num_images: 1, output_format: 'jpeg', safety_tolerance: '2' }, o);
+  },
+});
+// Qwen-Image-Edit inpaint on fal (failover only). Price NOT hard-coded: REMODEL_QWEN_USD (0 < x <= 0.16) or failover stays off.
+const QWEN_MODEL = 'fal-ai/qwen-image-edit/inpaint';
+function qwenUsd() { const n = Number((process.env.REMODEL_QWEN_USD || '').trim()); return Number.isFinite(n) && n > 0 && n <= MAX_FILL_USD ? n : null; }
+engines.register('qwen', {
+  usesMask: true,
+  available: () => qwenUsd() != null,
+  model: () => QWEN_MODEL,
+  usdPerCall: () => qwenUsd(),
+  run: (c, imageUrl, o) => {
+    if (typeof c.mask_url !== 'string' || !c.mask_url.startsWith('data:image/png;base64,')) { const e = new Error('qwen without mask'); e.code = 'NO_MASK'; return Promise.reject(e); }
+    return callFalJson(QWEN_MODEL, { prompt: `${regions.STRUCTURE_GUARD}\n${c.prompt}`, negative_prompt: (c.negative || []).join(', '), image_url: imageUrl, mask_url: c.mask_url, num_images: 1, output_format: 'jpeg' }, o);
+  },
+});
+/** Failover engine, or null when off: needs REMODEL_FAILOVER on, a valid REMODEL_QWEN_USD, and a kontext primary. */
+function failoverEngine(primary) {
+  if (!failoverFlag() || !primary || primary.id !== 'kontext' || qwenUsd() == null) return null;
+  return engines.ENGINES.qwen;
+}
+function withTimeout(p, ms) {
+  let t; const to = new Promise((_, rej) => { t = setTimeout(() => { const e = new Error('engine timeout'); e.code = 'FAL_TIMEOUT'; rej(e); }, ms); });
+  return Promise.race([p, to]).finally(() => clearTimeout(t));
+}
+
+/**
+ * The engine this request will use. Regions OFF: always kontext (engine + provider). Regions ON: the
+ * REMODEL_REGION_ENGINE choice; 'fill' without a valid price (at most 0.16 USD) returns null = refuse (fail closed).
+ */
+function hardRoute(e, v) { return e && e.id === 'kontext' && v && v.hardPhoto === true && maxOnHardOn() ? engines.ENGINES['kontext-max'] : e; }
+function selectEngine(v) {
+  if (!regionsOn()) return hardRoute(engines.ENGINES.kontext, v);
+  const want = (process.env.REMODEL_REGION_ENGINE || '').trim().toLowerCase();
+  if (want === 'fill' && !fillEnabled()) return hardRoute(engines.ENGINES.kontext, v);
+  if (want === 'fill' && fillUsd() == null) return null;
+  const e = engines.getEngine();
+  // kontext-max is never picked by env: only the per-request hard-photo route reaches it.
+  return hardRoute(e.id === 'kontext-max' ? engines.ENGINES.kontext : e, v);
+}
+
+/** Generic fal.run POST with the same retention headers and error shape as callFalKontext. */
+async function callFalJson(model, body, opts = {}) {
+  const key = getFalKey();
+  if (!key) { const err = new Error('FAL_KEY is not configured'); err.code = 'MISSING_KEY'; throw err; }
+  const fetchImpl = opts.fetchImpl || globalThis.fetch;
+  const headers = falRunHeaders(key);
+  const res = await fetchImpl(`https://fal.run/${model}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const text = await res.text();
+  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = {}; }
+  if (!res.ok) { const err = new Error(`fal upstream ${res.status}`); err.code = 'FAL_UPSTREAM'; err.falStatus = res.status; throw err; }
+  const rid = res.headers && res.headers.get ? res.headers.get('x-fal-request-id') : null;
+  console.info('fal_run_retention', JSON.stringify(falRetentionLog(headers, rid)));
+  if (rid && data && typeof data === 'object') Object.defineProperty(data, '__falRequestId', { value: rid, enumerable: false });
+  if (data && typeof data === 'object') Object.defineProperty(data, '__falStoreIo', { value: headers['X-Fal-Store-IO'] ?? null, enumerable: false });
+  return data;
+}
+
 /**
  * Express handler factory.
  * @param {{ getClientFromToken: Function, ownerTokens: Set, fetchImpl?: typeof fetch }} deps
  */
 function createRemodelGenerateHandler(deps) {
   return async function remodelGenerate(req, res) {
+    // Any response sent before the first fal call releases this request's cap reservations (QA R65).
+    let started = false;
+    let renderUsd = 0;
+    const early = async (code, obj) => { if (!started && typeof req.remodelReleaseAll === 'function') { try { await req.remodelReleaseAll(); } catch (_e) { /* fail-safe: slots stay used */ } } return res.status(code).json(obj); };
     try {
       const client = await deps.getClientFromToken(req);
       const auth = (req.headers.authorization || '').toString();
       const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
       const isOwner = Boolean(token && deps.ownerTokens && deps.ownerTokens.has(token));
       if (!client && !isOwner) {
-        return res.status(401).json({ error: 'Unauthorized' });
+        return early(401, { error: 'Unauthorized' });
       }
 
       if (!getFalKey()) {
-        return res.status(503).json({
+        return early(503, {
           error: 'Remodel generate is not configured (missing FAL_KEY)',
           honesty: HONESTY,
         });
       }
 
       const v = req.remodelValid || validateGenerateBody(req.body);
-      if (v.error) return res.status(v.status || 400).json({ error: v.error, honesty: HONESTY });
+      if (v.error) return early(v.status || 400, { error: v.error, honesty: HONESTY });
       const { projectId, image_url } = v;
       const calls = planCalls(v);
 
@@ -485,7 +659,7 @@ function createRemodelGenerateHandler(deps) {
       const remaining = remainingGenerates(budget);
       // Every fal call this request will make must fit the session cap before the first one goes out.
       if (remaining < calls.length) {
-        return res.status(429).json({
+        return early(429, {
           error: 'Session preview limit reached. Start a new browser session or try later.',
           remainingSessionGenerates: 0,
           honesty: HONESTY,
@@ -497,14 +671,37 @@ function createRemodelGenerateHandler(deps) {
       let input = image_url;
       let cleaned = false;
       const runCleanup = () => { if (!cleaned) { cleaned = true; cleanup(); } };
+      const engine = selectEngine(v);
+      if (!engine) return early(503, { error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      if (engine.usesMask && calls.some((c) => !c.region)) return early(503, { error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
+      // The up-front per-render ceiling is #14's capGate check (400, before any reservation); the per-call check below reads the same setting.
+      const ceiling = renderMaxUsd(req);
+      const backup = failoverEngine(engine);
+      const size = engine.usesMask || backup ? imageSize(image_url) : null;
+      if ((engine.usesMask || backup) && !size) return early(400, { error: 'Could not read image size', honesty: HONESTY });
       try {
       for (const c of calls) {
-        const d = await callFalKontext({ prompt: c.prompt, image_url: input, ...(c.guidance_scale ? { guidance_scale: c.guidance_scale } : {}) }, { fetchImpl: deps.fetchImpl });
-        // fal has billed once it returns: charge the session now, even if a later step fails.
-        budget.count += 1;
-        budget.spendUsd += falModel().usd;
-        budget.updatedAt = Date.now();
-        sessionSpend.set(sessionKey, budget);
+        const call = { ...c, ...(size ? { mask_url: regions.heuristicMask(c.region || 'finishes', size.w, size.h) } : {}) };
+        if (!engine.usesMask) delete call.mask_url;
+        const charge = (eng) => { budget.count += 1; budget.spendUsd += eng.usdPerCall(); budget.updatedAt = Date.now(); sessionSpend.set(sessionKey, budget); renderUsd += eng.usdPerCall(); };
+        if (renderUsd + engine.usdPerCall() > ceiling + 1e-9) { const e = new Error('render ceiling'); e.code = 'RENDER_CEILING'; throw e; }
+        let d;
+        started = true;
+        try {
+          d = await withTimeout(engine.run(call, input, { fetchImpl: deps.fetchImpl }), engineTimeoutMs());
+          // fal has billed once it returns: charge the session now, even if a later step fails.
+          charge(engine);
+        } catch (e) {
+          if (!backup || !['FAL_UPSTREAM', 'FAL_FETCH', 'FAL_TIMEOUT'].includes(e && e.code)) throw e;
+          // The failed attempt may still have billed: charge it, then the retry must fit every cap before it goes out.
+          charge(engine);
+          if (remainingGenerates(budget) < 1 || renderUsd + backup.usdPerCall() > ceiling + 1e-9) throw e;
+          const ok = typeof req.remodelReserveExtra === 'function' ? await req.remodelReserveExtra(backup.usdPerCall()) : false;
+          if (!ok) throw e;
+          console.info('remodel_failover', JSON.stringify({ region: c.region || null, from: engine.id, to: backup.id, reason: e.code }));
+          d = await withTimeout(backup.run({ ...call, mask_url: regions.heuristicMask(c.region || 'finishes', size.w, size.h) }, input, { fetchImpl: deps.fetchImpl }), engineTimeoutMs());
+          charge(backup);
+        }
         results.push(d);
         const u = d?.images?.[0]?.url;
         if (!u) break;
@@ -515,7 +712,7 @@ function createRemodelGenerateHandler(deps) {
         runCleanup();
         throw e;
       }
-      if (calls.length > 1) console.info('remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
+      if (calls.length > 1) console.info(calls[0].region ? 'remodel_region_passes' : 'remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
       const data = results[results.length - 1];
       const falUrl = results.length === calls.length ? data?.images?.[0]?.url : null;
       function cleanup() { setImmediate(() => {
@@ -553,11 +750,16 @@ function createRemodelGenerateHandler(deps) {
         afterImageExpiresIn: store.URL_TTL_SEC_MAX,
         remainingSessionGenerates: remainingGenerates(budget),
         honesty: HONESTY,
-        provider: falModel().id,
+        provider: engine.model(),
         seed: data.seed ?? null,
         projectId,
       });
     } catch (e) {
+      // QA R66 P3: nothing reached fal (thrown before the first call, or a NO_MASK refusal before anything billed): release all.
+      if ((!started || (e && e.code === 'NO_MASK' && renderUsd === 0)) && typeof req.remodelReleaseAll === 'function') { try { await req.remodelReleaseAll(); } catch (_x) { /* fail-safe */ } }
+      if (e && e.code === 'RENDER_CEILING') return res.status(429).json({ error: 'Preview limit reached for this render. Try fewer changes.', honesty: HONESTY });
+      if (e && e.code === 'FAL_TIMEOUT') return res.status(502).json({ error: 'Image service failed — try again later', honesty: HONESTY });
+      if (e && e.code === 'NO_MASK') return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
       if (e && e.code === 'MISSING_KEY') {
         return res.status(503).json({ error: 'Remodel generate is not configured (missing FAL_KEY)', honesty: HONESTY });
       }
@@ -571,6 +773,23 @@ function createRemodelGenerateHandler(deps) {
 }
 
 module.exports = {
+  maxOnHardOn,
+  fillEnabled,
+  HEX_RE,
+  presetsOn,
+  cabinetsOnly,
+  declutterOn,
+  failoverEngine,
+  qwenUsd,
+  renderMaxUsd,
+  QWEN_MODEL,
+  selectEngine,
+  fillUsd,
+  MAX_FILL_USD,
+  regionsOn,
+  imageSize,
+  withNegatives,
+  FILL_MODEL,
   stripImageMetadata,
   FAL_MODEL,
   FAL_MODELS,

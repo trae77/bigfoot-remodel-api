@@ -115,4 +115,9 @@ async function releaseAll(store, keys, n) {
   for (const k of keys) { try { await store.release(k, n); } catch (_e) { /* fail-safe */ } }
 }
 
-module.exports = { CapStoreError, createD1CapStore, createMemoryCapStore, capStoreFromEnv, reserveAll, periodKeys, RESERVE_SQL, SCHEMA_SQL };
+/** REMODEL_MONTHLY_USD_CAP in cents (default 10 USD, well under the prepaid balance). Invalid, <= 0 or above 19 USD falls back to 10 USD. */
+function monthlyUsdCapCents(env = process.env) {
+  const n = Number(String(env.REMODEL_MONTHLY_USD_CAP || '').trim());
+  return Math.round((Number.isFinite(n) && n > 0 && n <= 19 ? n : 10) * 100);
+}
+module.exports = { monthlyUsdCapCents, CapStoreError, createD1CapStore, createMemoryCapStore, capStoreFromEnv, reserveAll, releaseAll, periodKeys, RESERVE_SQL, SCHEMA_SQL };
