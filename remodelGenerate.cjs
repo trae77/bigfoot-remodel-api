@@ -291,7 +291,9 @@ function resolveColor(hex, text) {
   let phrase = null;
   if (m.hex) phrase = `repaint the walls ${words ? `${words} ` : ''}(${m.hex}), a muted matte paint`;
   else if (m.text) phrase = `repaint the walls ${m.text}, a muted matte paint`; // nomatch: keep the free text, never guess
-  return { colorMatch: m.method, colorId: m.id, colorHexUsed: m.hex, phrase };
+  // Brand-only text with aliases OFF: every word was a brand term and got stripped. Tell the UI instead of silently ignoring.
+  const brandDropped = hex == null && m.method === 'none' && !m.text && typeof text === 'string' && text.trim() !== '';
+  return { colorMatch: brandDropped ? 'brand_dropped' : m.method, colorId: m.id, colorHexUsed: m.hex, phrase };
 }
 
 /**

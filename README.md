@@ -90,3 +90,9 @@ Source: AI Bot's 12-photo test, /workspace/remodel-test/ab/t12/ (run12.py, score
   - **Brand aliases OFF**: `PALETTE_BRAND_ALIASES` is off unless exactly '1'. Off, brand color names are dropped from the text before matching, so they never reach the prompt or the response. Colors are approximate previews, not manufacturer matches.
   - **Response `meta`**: `hard`, `hardReasons`, `signals` (w, h, aspect, darkFrac, edgeDensity), `engine`, `warning`, `colorMatch`, `colorId`, `colorHexUsed`.
 - **Fill dropped**: REMODEL_REGION_ENGINE=fill runs Kontext unless REMODEL_FILL_ENABLE is exactly '1' (plus a valid REMODEL_FILL_USD).
+
+## Flags and image-safety notes (QA punch PR #15)
+- Strict flags (`REMODEL_MAX_ON_HARD`, `REMODEL_FILL_ENABLE`, `PALETTE_BRAND_ALIASES`): ON only when the value is exactly `1` after trimming whitespace. `true`, `yes`, `01`, unset = OFF.
+- Kontext max on hard photos is **OFF in prod** unless BOTH `REMODEL_MAX_ON_HARD=1` AND `REMODEL_HARD_ENGINE=kontext-max` are set (behaviour change: before PR #15 max-on-hard defaulted on). Otherwise hard photos use kontext-pro.
+- `meta.colorMatch` is `brand_dropped` when colorText was only a paint-brand name and brand aliases are off; it is ignored (no phrase).
+- Hard-photo signals (sharp ^0.35.5): magic-byte check allows only jpeg/png/webp; a header-only `metadata()` probe rejects images over 40 MP (`limitInputPixels`) before any full decode; libvips cache off, concurrency 1. Any failure = signals null (client flag only). Keeps memory bounded on Render's 512 MB plan.

@@ -51,6 +51,15 @@ function signalsFromPixels(data, width, height, channels, srcW, srcH) {
   return { w: srcW, h: srcH, aspect: r4(srcW / srcH), darkFrac: r4(dark / n), edgeDensity: r4(edges / n) };
 }
 
+/** jpeg | png | webp from magic bytes, else null. */
+function sniffFormat(b) {
+  if (!Buffer.isBuffer(b) || b.length < 12) return null;
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg';
+  if (b.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  return null;
+}
+
 /** Signals for a data:image URI, or null when the image can't be decoded (then only the client flag counts). */
 async function computeSignals(dataUri, sharpImpl) {
   try {
@@ -59,9 +68,13 @@ async function computeSignals(dataUri, sharpImpl) {
     const sharp = sharpImpl || require('sharp');
     if (!sharpImpl && !sharpReady) { sharp.cache(false); sharp.concurrency(1); sharpReady = true; }
     const buf = Buffer.from(m[1], 'base64');
+    if (sniffFormat(buf) == null) return null; // magic bytes: only jpeg/png/webp ever reach libvips (no svg/heif/tiff/gif)
     const o = { limitInputPixels: MAX_INPUT_PIXELS };
+    // Header-only probe first: metadata() reads dimensions without a full decode, so oversize images are refused
+    // before any pixel buffer is allocated (memory guard for Render's 512 MB plan); format must match the magic bytes.
     const meta = await sharp(buf, o).metadata();
-    if (!meta.width || !meta.height) return null;
+    if (!meta.width || !meta.height || !['jpeg', 'png', 'webp'].includes(meta.format)) return null;
+    if (meta.width * meta.height > MAX_INPUT_PIXELS) return null;
     const { data, info } = await sharp(buf, o).removeAlpha().resize({ width: SIGNAL_WIDTH, kernel: 'lanczos3' }).raw().toBuffer({ resolveWithObject: true });
     return signalsFromPixels(data, info.width, info.height, info.channels, meta.width, meta.height);
   } catch (_e) {
@@ -86,4 +99,4 @@ function classify(signals, clientFlag, env = process.env) {
   };
 }
 
-module.exports = { DEFAULTS, SIGNAL_WIDTH, thresholds, signalsFromPixels, computeSignals, classify };
+module.exports = { DEFAULTS, SIGNAL_WIDTH, thresholds, signalsFromPixels, computeSignals, classify, sniffFormat, MAX_INPUT_PIXELS };

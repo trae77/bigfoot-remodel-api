@@ -177,7 +177,7 @@ test('colors in generate: colorHex wins, colorText matched to our generic color,
     assert.equal(r.status, 200); assert.deepEqual([r.json.meta.colorMatch, r.json.meta.colorId, r.json.meta.colorHexUsed], ['alias', 'sage', '#A3AD8F']);
     assert.match(runs.at(-1).body.prompt, /Wall paint\/tile: repaint the walls sage \(#A3AD8F\), a muted matte paint/);
     r = await gen(s, { image_url: await jpeg(1280, 960), finishes: { cabinets: 'white shaker' }, colorText: 'Revere Pewter' });
-    assert.equal(r.status, 200); assert.equal(r.json.meta.colorMatch, 'none'); assert.equal(r.json.meta.colorId, null);
+    assert.equal(r.status, 200); assert.equal(r.json.meta.colorMatch, 'brand_dropped'); assert.equal(r.json.meta.colorId, null);
     r = await gen(s, { image_url: await jpeg(1280, 960), finishes: { cabinets: 'white shaker' }, colorText: 'periwinkle' });
     assert.equal(r.json.meta.colorMatch, 'none'); assert.match(runs.at(-1).body.prompt, /repaint the walls periwinkle, a muted matte paint/);
     for (const x of runs) for (const b of BRANDS) assert.ok(!x.body.prompt.toLowerCase().includes(b), b);
@@ -209,4 +209,26 @@ test('prompt cap: worst-case hard + 60-char color stays <= 1200 per call (two-pa
     for (const c of G.planCalls(v)) assert.ok(c.prompt.length <= G.MAX_PROMPT_CHARS, `${tp} ${room} ${c.prompt.length}`);
   }
   delete process.env.REMODEL_TWO_PASS;
+});
+
+// QA punch PR15 @5307668: magic bytes in computeSignals, brand_dropped, pixel guard.
+test('computeSignals rejects non jpeg/png/webp bytes before sharp (svg labeled png)', async () => {
+  let called = false; const fake = () => { called = true; throw new Error('no'); };
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>').toString('base64');
+  assert.equal(await H.computeSignals(`data:image/png;base64,${svg}`, fake), null); assert.equal(called, false);
+  assert.equal(H.sniffFormat(Buffer.from('GIF89a000000')), null);
+  assert.equal(H.sniffFormat(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0])), 'jpeg');
+});
+test('computeSignals refuses oversize pixel dims from metadata without full decode', async () => {
+  const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#808080' } }).png().toBuffer();
+  let decoded = false;
+  const fake = () => ({ metadata: async () => ({ width: 10000, height: 5000, format: 'png' }), removeAlpha() { decoded = true; return this; } });
+  assert.equal(await H.computeSignals(`data:image/png;base64,${png.toString('base64')}`, fake), null); assert.equal(decoded, false);
+  assert.ok(await H.computeSignals(`data:image/png;base64,${png.toString('base64')}`));
+});
+test('brand-only colorText with aliases off -> colorMatch brand_dropped, no phrase', () => {
+  const { resolveColor } = require('../remodelGenerate.cjs');
+  for (const b of BRANDS.slice(0, 5)) { const c = resolveColor(null, b); assert.equal(c.colorMatch, 'brand_dropped', b); assert.equal(c.phrase, null); }
+  assert.notEqual(resolveColor(null, 'navy').colorMatch, 'brand_dropped');
+  assert.equal(resolveColor('#112233', null).colorMatch, 'hex');
 });
