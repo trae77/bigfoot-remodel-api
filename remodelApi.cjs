@@ -20,6 +20,7 @@ function createApp(opts = {}) {
   const caps = require('./capStore.cjs');
   const capStore = opts.capStore || caps.capStoreFromEnv(process.env);
   const tokenCounter = opts.tokenCounter || sec.createDailyCounter();
+  const badTokens = opts.badTokenLimiter || sec.createBadTokenLimiter();
   const tokenUses = opts.tokenUses || sec.createTokenUseTracker();
   const imageStore = opts.imageStore || require('./imageStore.cjs').createImageStore();
   const app = express();
@@ -81,7 +82,12 @@ function createApp(opts = {}) {
     const cfg = req.remodelCfg;
     const given = req.headers[sec.TEST_TOKEN_HEADER];
     if (!cfg.testToken || given === undefined || req.method !== 'POST') return next();
+    const ip = sec.clientIp(req);
+    if (badTokens.blocked(ip)) {
+      return res.status(429).json({ error: 'Too many attempts. Try again later.', honesty: HONESTY });
+    }
     if (!sec.testTokenMatches(cfg.testToken, String(given))) {
+      if (!badTokens.fail(ip)) return res.status(429).json({ error: 'Too many attempts. Try again later.', honesty: HONESTY });
       // Before any cap reservation. Never echo the header.
       return res.status(401).json({ error: 'Unauthorized', honesty: HONESTY });
     }

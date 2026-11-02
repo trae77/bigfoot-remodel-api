@@ -178,3 +178,38 @@ test('normal public path unchanged: no Origin still 403 without test header', as
   const s = await start({ REMODEL_TEST_TOKEN: TT });
   try { assert.equal((await gen(s.base, {})).status, 403); assert.equal((await gen(s.base, { origin: ORIGIN })).status, 401); } finally { await s.close(); }
 });
+
+test('P3 REMODEL_RENDER_MAX_USD clamps at $1.00; invalid/unset -> $0.50 default', () => {
+  const sec = require('../security.cjs');
+  assert.equal(sec.renderMaxUsd(undefined), 0.5);
+  for (const v of ['', 'abc', '-1', '0', 'NaN', 'Infinity', '1e9', '0x10', ' ']) assert.equal(sec.renderMaxUsd(v), 0.5, v);
+  for (const v of ['1', '1.0', '1.01', '5', '999999']) assert.equal(sec.renderMaxUsd(v), 1, v);
+  assert.equal(sec.renderMaxUsd('0.25'), 0.25);
+});
+
+test('P3 huge REMODEL_RENDER_MAX_USD is clamped end to end', async () => {
+  const s = await start({ REMODEL_TEST_TOKEN: TT, REMODEL_RENDER_MAX_USD: '1000' });
+  try { assert.equal(require('../security.cjs').getConfig().renderMaxUsd, 1); } finally { await s.close(); }
+});
+
+test('P3 wrong test tokens: 5 x 401 per IP, then 429; no reservation; other IPs unaffected; correct token also 429 from blocked IP', async () => {
+  const s = await start({ REMODEL_TEST_TOKEN: TT });
+  try {
+    for (let i = 0; i < 5; i++) assert.equal((await gen(s.base, { tt: 'wrong' + i, ip: '192.0.2.7' })).status, 401);
+    const r = await gen(s.base, { tt: 'wrong', ip: '192.0.2.7' });
+    assert.equal(r.status, 429); assertNoSecret(r.text);
+    assert.equal((await gen(s.base, { tt: TT, ip: '192.0.2.7' })).status, 429);
+    assert.equal(s.store.total(), 0); assert.equal(falCalls, 0);
+    assert.equal((await gen(s.base, { tt: TT, ip: '192.0.2.8' })).status, 200);
+  } finally { await s.close(); }
+});
+
+test('P3 bad-token limiter: window expiry and fail-closed when full', () => {
+  const sec = require('../security.cjs');
+  const l = sec.createBadTokenLimiter({ max: 5, windowMs: 1000, maxKeys: 2 });
+  for (let i = 0; i < 5; i++) assert.equal(l.fail('a', 0), true);
+  assert.equal(l.blocked('a', 999), true);
+  assert.equal(l.blocked('a', 1000), false);
+  assert.equal(l.fail('b', 10), true);
+  assert.equal(l.fail('c', 10), false); // full, nothing expired -> refuse (429)
+});
