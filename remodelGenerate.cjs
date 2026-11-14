@@ -3,6 +3,7 @@
  * Contract: docs/fal-kontext-contract-2026-10-24.md (mirror: offline-ai/docs/bigfoot-remodel-fal-contract-2026-10-24.md)
  * Authorized William t1097u — preview only. Never log FAL_KEY.
  */
+const promptBuilder = require('./promptBuilder.cjs');
 
 // Model and $/image from fal's model pages (fal.ai/models/fal-ai/flux-pro/kontext[/max]/llms.txt, 2026-10-31).
 const FAL_MODELS = { pro: { id: 'fal-ai/flux-pro/kontext', usd: 0.04 }, max: { id: 'fal-ai/flux-pro/kontext/max', usd: 0.08 } };
@@ -219,8 +220,30 @@ function validateImage(raw) {
   if (m[2].length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) return { error: 'Image is too large', status: 413 };
   const bytes = Buffer.from(m[2], 'base64');
   if (!MAGIC[m[1]](bytes)) return { error: 'Image content does not match its type' };
+  if (isAnimatedImage(m[1], bytes)) return { error: 'Use a still photo, not an animated image' };
   const clean = stripImageMetadata(m[1], bytes);
-  return { image_url: clean === bytes ? `data:${m[1]};base64,${m[2]}` : `data:${m[1]};base64,${clean.toString('base64')}` };
+  const uri = `data:${m[1]};base64,${(clean === bytes ? m[2] : clean.toString('base64'))}`;
+  const dim = imageSize(uri);
+  if (dim && dim.w * dim.h > 40_000_000) return { error: 'That photo is too large. Try a smaller image.', status: 413 };
+  return { image_url: uri };
+}
+
+function isAnimatedImage(type, b) {
+  try {
+    if (type === 'image/png') {
+      let i = 8;
+      while (i + 12 <= b.length) {
+        const len = b.readUInt32BE(i); const name = b.toString('latin1', i + 4, i + 8);
+        if (name === 'acTL') return true;
+        if (name === 'IDAT' || name === 'IEND') break;
+        i += 12 + len;
+      }
+    }
+    if (type === 'image/webp' && b.length >= 21 && b.toString('latin1', 12, 16) === 'VP8X') {
+      if (b[20] & 0x02) return true;
+    }
+  } catch (_e) { return true; }
+  return false;
 }
 
 /** Validate the whole body before anything is counted or sent. Returns { error, status } or the clean fields. */
@@ -277,10 +300,17 @@ function validateGenerateBody(body) {
   }
   const img = validateImage(body.imageUrl ?? body.image_url);
   if (img.error) return img;
+  let builtPasses = null;
+  const selIn = body.selections;
+  if (selIn && typeof selIn === 'object' && !Array.isArray(selIn)) {
+    const built = promptBuilder.buildPrompts(selIn, { fillStyleDefaults: selIn.fillStyleDefaults !== false });
+    if (!built.pass1 && !built.pass2) return { error: 'Pick a look or a finish first' };
+    builtPasses = { pass1: built.pass1 || '', pass2: built.pass2 || '' };
+  }
   const longSide = imageLongSide(img.image_url);
   if (longSide != null && longSide < MIN_LONG_SIDE_PX) console.warn('remodel_input_small', JSON.stringify({ longSide, min: MIN_LONG_SIDE_PX }));
   const v = { projectId, room, finishes, catalogSlots, image_url: img.image_url, longSide, hardPhoto: hardPhotoFlag, color,
-    ...hardPhoto.classify(null, hardPhotoFlag), signals: null };
+    ...hardPhoto.classify(null, hardPhotoFlag), signals: null, builtPasses };
   return composeOrFallback(v);
 }
 
@@ -318,10 +348,15 @@ function hardWording(v) { return v.hard === true && v.hardPrompt !== false; }
 
 /** Builds v.prompt for v.hard and checks every planned fal call against MAX_PROMPT_CHARS. Returns an error or null. */
 function composePrompt(v) {
-  v.prompt = buildPrompt(v.room, v.finishes, { catalogSlots: v.catalogSlots, hard: hardWording(v), compactKeep: v.compactKeep === true });
+  if (v.builtPasses && (v.builtPasses.pass1 || v.builtPasses.pass2)) {
+    v.prompt = v.builtPasses.pass1 || v.builtPasses.pass2;
+  } else {
+    v.prompt = buildPrompt(v.room, v.finishes, { catalogSlots: v.catalogSlots, hard: hardWording(v), compactKeep: v.compactKeep === true });
+  }
   // The cap applies to what is actually sent: each fal call's prompt (two-pass splits the edit across 2 calls).
   const sent = planCalls(v);
   if (cabinetsOnly() && !sent.length) return { error: 'Pick a cabinet finish for the cabinet-only preview' };
+  if (!sent.length) return { error: 'Pick a look or a finish first' };
   if (sent.some((c) => c.prompt.length > MAX_PROMPT_CHARS)) return { error: 'Prompt too long' };
   return null;
 }
@@ -470,6 +505,12 @@ function floorOnlyPrompt(floor, fromCatalog, hard = false) {
 
 /** The fal calls one generate will make: [{ prompt, guidance_scale? }]. Two only when REMODEL_TWO_PASS=1, a floor change is asked for, and something else changes too. */
 function planCalls(v) {
+  if (v.builtPasses) {
+    const out = [];
+    if (v.builtPasses.pass1) out.push({ prompt: v.builtPasses.pass1, guidance_scale: 3.5 });
+    if (v.builtPasses.pass2) out.push({ prompt: v.builtPasses.pass2, guidance_scale: 3.5 });
+    return out;
+  }
   const f = v.finishes || {};
   if (regionsOn()) {
     const fromCat = v.catalogSlots instanceof Set ? v.catalogSlots : new Set();
@@ -594,7 +635,8 @@ async function callFalKontext(input, opts = {}) {
     guidance_scale: typeof input.guidance_scale === 'number' ? input.guidance_scale : falGuidance(),
     num_images: 1,
     output_format: 'jpeg',
-    safety_tolerance: '2',
+    safety_tolerance: '1',
+    enhance_prompt: false,
   };
   const headers = falRunHeaders(key);
   const res = await fetchImpl(`https://fal.run/${opts.model || falModel().id}`, {
@@ -734,6 +776,7 @@ function responseMeta(v, engine) {
  * Express handler factory.
  * @param {{ getClientFromToken: Function, ownerTokens: Set, fetchImpl?: typeof fetch }} deps
  */
+const inFlightSessions = new Map();
 function createRemodelGenerateHandler(deps) {
   return async function remodelGenerate(req, res) {
     // Any response sent before the first fal call releases this request's cap reservations (QA R65).
@@ -761,6 +804,9 @@ function createRemodelGenerateHandler(deps) {
       const { projectId, image_url } = v;
       const calls = planCalls(v);
 
+      if (String(process.env.REMODEL_KILL || '').trim() === '1') {
+        return early(503, { error: 'This tool is paused for today. You can still request an estimate.', honesty: HONESTY });
+      }
       const sessionKey = sessionKeyFromReq(req);
       const budget = getSessionBudget(sessionKey);
       const remaining = remainingGenerates(budget);
@@ -786,6 +832,10 @@ function createRemodelGenerateHandler(deps) {
       const backup = failoverEngine(engine);
       const size = engine.usesMask || backup ? imageSize(image_url) : null;
       if ((engine.usesMask || backup) && !size) return early(400, { error: 'Could not read image size', honesty: HONESTY });
+      if ((inFlightSessions.get(sessionKey) || 0) >= 1) {
+        return early(429, { error: 'A render is already running in this session. Please wait for it to finish.', honesty: HONESTY });
+      }
+      inFlightSessions.set(sessionKey, 1);
       try {
       for (const c of calls) {
         const call = { ...c, ...(size ? { mask_url: regions.heuristicMask(c.region || 'finishes', size.w, size.h) } : {}) };
@@ -810,6 +860,11 @@ function createRemodelGenerateHandler(deps) {
           charge(backup);
         }
         results.push(d);
+        if (Array.isArray(d.has_nsfw_concepts) && d.has_nsfw_concepts.some(Boolean)) {
+          const err = new Error('nsfw');
+          err.code = 'NSFW_BLOCKED';
+          throw err;
+        }
         const u = d?.images?.[0]?.url;
         if (!u) break;
         input = u;
@@ -818,6 +873,8 @@ function createRemodelGenerateHandler(deps) {
         // A later pass threw: still log the skip/delete for every call fal already ran (pass 1's id stays in the audit log).
         runCleanup();
         throw e;
+      } finally {
+        inFlightSessions.delete(sessionKey);
       }
       if (calls.length > 1) console.info(calls[0].region ? 'remodel_region_passes' : 'remodel_two_pass', JSON.stringify({ ids: results.map((d) => d.__falRequestId || null), passes: results.length }));
       const data = results[results.length - 1];
@@ -865,6 +922,7 @@ function createRemodelGenerateHandler(deps) {
     } catch (e) {
       // QA R66 P3: nothing reached fal (thrown before the first call, or a NO_MASK refusal before anything billed): release all.
       if ((!started || (e && e.code === 'NO_MASK' && renderUsd === 0)) && typeof req.remodelReleaseAll === 'function') { try { await req.remodelReleaseAll(); } catch (_x) { /* fail-safe */ } }
+      if (e && e.code === 'NSFW_BLOCKED') return res.status(422).json({ error: 'The image service did not return a preview. Please try a different room photo.', honesty: HONESTY });
       if (e && e.code === 'RENDER_CEILING') return res.status(429).json({ error: 'Preview limit reached for this render. Try fewer changes.', honesty: HONESTY });
       if (e && e.code === 'FAL_TIMEOUT') return res.status(502).json({ error: 'Image service failed — try again later', honesty: HONESTY });
       if (e && e.code === 'NO_MASK') return res.status(503).json({ error: 'Previews are paused right now. Please try again later.', honesty: HONESTY });
