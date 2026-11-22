@@ -46,7 +46,7 @@ function createApp(opts = {}) {
     if (origin && cfg.origins.has(origin)) {
       res.set('Access-Control-Allow-Origin', origin);
       res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Remodel-Session');
+      res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Remodel-Session, X-Remodel-Gate');
       res.set('Access-Control-Max-Age', '600');
     }
     req.remodelCfg = cfg;
