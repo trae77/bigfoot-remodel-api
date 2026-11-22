@@ -176,7 +176,7 @@ async function raw(base, path, { method = 'POST', headers = {}, body } = {}) {
   return { status: res.status, headers: res.headers };
 }
 
-test('P1 CORS: health sends ACAO for allowed origin, not for foreign; preflight allows X-Remodel-Session', async () => {
+test('P1 CORS: health sends ACAO for allowed origin, not for foreign; preflight allows X-Remodel-Session and X-Remodel-Gate', async () => {
   const s = await start({});
   try {
     const h = await call(s.base, '/api/health', { method: 'GET' });
@@ -187,10 +187,10 @@ test('P1 CORS: health sends ACAO for allowed origin, not for foreign; preflight 
     assert.equal(noOrigin.headers.get('access-control-allow-origin'), null);
     const evil = await call(s.base, '/api/health', { method: 'GET', origin: 'https://evil.example' });
     assert.equal(evil.headers.get('access-control-allow-origin'), null);
-    const pre = await raw(s.base, '/api/remodel/generate', { method: 'OPTIONS', headers: { 'Access-Control-Request-Headers': 'authorization,content-type,x-remodel-session' } });
+    const pre = await raw(s.base, '/api/remodel/generate', { method: 'OPTIONS', headers: { 'Access-Control-Request-Headers': 'authorization,content-type,x-remodel-session,x-remodel-gate' } });
     assert.equal(pre.status, 204);
     const allow = (pre.headers.get('access-control-allow-headers') || '').toLowerCase();
-    for (const hd of ['authorization', 'content-type', 'x-remodel-session']) assert.ok(allow.includes(hd), hd);
+    for (const hd of ['authorization', 'content-type', 'x-remodel-session', 'x-remodel-gate']) assert.ok(allow.includes(hd), hd);
     assert.equal(pre.headers.get('access-control-allow-credentials'), null);
     const tok = await getToken(s.base, '8.0.0.1');
     const g = await call(s.base, '/api/remodel/generate', { token: tok, ip: '8.0.0.1', body: GEN });

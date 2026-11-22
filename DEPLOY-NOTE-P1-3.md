@@ -37,7 +37,7 @@ Until the SPA is updated, the remodel preview will return 401 after deploy.
 
 ## QA punch 2026-10-31 fixes (this branch)
 - CORS: every `/api` route, `/api/health` included, echoes `Access-Control-Allow-Origin` for an allowlisted Origin only.
-  Preflight allows `Authorization, Content-Type, X-Remodel-Session`. No credentials header is sent.
+  Preflight allows `Authorization, Content-Type, X-Remodel-Session, X-Remodel-Gate`. No credentials header is sent.
 - Image: only `data:image/(jpeg|png|webp);base64,...` whose magic bytes match the type. URLs, `file://`, metadata IPs,
   relative paths, HTML, SVG and EXE are refused with 400 before fal. Max ~7 MB decoded.
 - Prompt: room must be one of the page's rooms; finishes are 4 known string fields, 100 chars each, plain characters only;
